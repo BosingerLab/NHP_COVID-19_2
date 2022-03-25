@@ -1,0 +1,2280 @@
+---
+title: "Mmul10-MT246667_Bulk_Analysis"
+author: "GKT"
+date: '`r format(file.info("Mmul10-MT246667_Bulk_Analysis.Rmd")$ctime, "%Y-%M-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, results = 'asis')
+
+library(knitr)
+library(DESeq2)
+library(tidyverse)
+library(readxl)
+library(ggpubr)
+library(ggforce)
+library(grid)
+library(DT)
+library(shiny)
+library(ComplexHeatmap)
+library(cluster)
+library(circlize)
+library(EnhancedVolcano)
+library(openxlsx)
+library(svglite)
+
+
+## set pathRoot for appropriate connection method
+# from OSX mounted share file
+# pathRoot = "/Volumes/yerkes/genomelab/illumina/"
+
+# from server (sblab-wks02 RStudioServer)
+pathRoot = "/yerkes-cifs/runs/"
+
+# Extension path
+# extPath = "home/gktharp/rsnippets/Rutils/GKTDESeq2Extentions.R"
+extPath = "home/gktharp/gitrepos/Coding_Club/BulkRNASeq/gktharp/GKTDESeq2Extentions.R"
+# load Extensions
+source(paste0(pathRoot,extPath))
+
+# reference path
+Mmul10Path <- paste0(pathRoot,"Genome_references/macaca_mulatta/mmul10/ensembl_100/")
+Mmul10symbolTableFile <- "geneid_genenames_biomart"
+
+Mmul10Annot <- read_tsv(paste0(Mmul10Path,Mmul10symbolTableFile), col_names = c("gene_id","gene_symbol"))
+Mmul10SymbolVector <- Mmul10Annot$gene_symbol
+names(Mmul10SymbolVector) <- Mmul10Annot$gene_id
+Mmul10SymbolFromID <- function(x) {
+  if_else(!is.na(unname(Mmul10SymbolVector[x])),unname(Mmul10SymbolVector[x]),x)
+}
+
+Mmul10ProteinCodingByENSID <- read_tsv(paste0(Mmul10Path,"protein_coding_byENSID.txt"),col_names = c("gene_id"))
+
+# sequencing Run path
+runPath <- "200803_A00945_0050_BHTCY7DMXX/Unaligned/p20097_Tim/"
+
+# dataPath
+
+dataPath <- paste0(pathRoot,"Analysis/COVID_NHP_Study1/Data/Bulk/AlaHtseq/")
+# analysisPath
+analysisPath = "Analysis/COVID_NHP_Study1/Analysis_GKT/Bulk/Covid_NHP_Bulk_Analysis"
+setwd(paste0(pathRoot,analysisPath))
+
+
+```
+
+## Project Description
+
+p20097_Tim Bulk Rhesus COVID samples
+Analysis with Mmul10 and MT246667 references
+
+101 samples
+61: PBMC
+40: BAL
+
+8 Timepoints:
+dpi: -5,1,2,4,7,8,Necropsy
+
+8 Subjects:
+Untreated:
+06_112
+5_215
+RQv9
+RHz12
+
+Treated:
+RAt11
+RLf10
+RVf12
+7_141
+
+
+```{r p20097_SampleData, cache=TRUE, echo=TRUE, results='asis'}
+
+mappingTableP20097 <- read_tsv(paste0(pathRoot,runPath,"p20097_Tim_Mmul10_MT246667.1_MappingDistribution.txt"))
+mappingTableP20097 <- mutate(mappingTableP20097, SampleID = unlist(lapply(str_split(ID,"_"),"[",1)), .before = ID)
+mapTabID <- mappingTableP20097$ID
+
+mapTabID <- sub("06_112","06-112",mapTabID)
+mapTabID <- sub("5_215","5-215",mapTabID)
+mapTabID <- sub("7_141","7-141",mapTabID)
+mapTabComp <- str_split(mapTabID, "_")
+mapTabSID <- unlist(lapply(mapTabComp,"[",1))
+mapTabSubID <- unlist(lapply(mapTabComp,"[",2))
+mapTabSubID <- sub("06-112","06_112",mapTabSubID)
+mapTabSubID <- sub("5-215","5_215",mapTabSubID)
+mapTabSubID <- sub("7-141","7_141",mapTabSubID)
+mapTabID <- sub("06-112","06_112",mapTabID)
+mapTabID <- sub("5-215","5_215",mapTabID)
+mapTabID <- sub("7-141","7_141",mapTabID)
+mapTabDate <- unlist(lapply(mapTabComp,"[",3))
+mapTabTime <- unlist(lapply(mapTabComp,"[",4))
+mapTabSource <- unlist(lapply(mapTabComp,"[",5))
+mapTabMeta <- data.frame(SampleID = mapTabSID, cID = mapTabID, SubjectID = mapTabSubID, Date = mapTabDate, Timepoint = mapTabTime, Source = mapTabSource)
+untreatedList = c("06_112","5_215","RQv9","RHz12")
+treatedList = c("RAt11","RLf10","RVf12","7_141")
+mapTabMeta <- mutate(mapTabMeta, Treated = if_else(SubjectID %in% treatedList, "treated","untreated"), .after = SubjectID)
+mappingDFP20097 <- left_join(mapTabMeta, mappingTableP20097, by = c("SampleID"))
+levels(mappingDFP20097$Timepoint)
+# [1] "-5dpi"    "1dpi"     "2dpi"     "4dpi"     "6dpi"     "7dpi"     "8dpi"     "Necropsy"
+levels(mappingDFP20097$SubjectID)
+# [1] "06_112" "5_215"  "7_141"  "RAt11"  "RHz12"  "RLf10"  "RQv9"   "RVf12"
+# mappingDFP20097 <- mutate(mappingDFP20097, Treated = if_else(SubjectID %in% treatedList, "treated","untreated"), .after = SubjectID)
+mappingDFP20097 <- mutate(mappingDFP20097, viral = (MT246667.1 / host), .after = MT246667.1)
+
+mappingDFP20097 %>% filter(Source == "BAL") %>% ggplot(aes(x = Timepoint, y = viral)) + geom_line(aes(color = Treated, group = SubjectID)) + geom_text(aes(label = SubjectID), data = mappingDFP20097 %>% filter(Source == "BAL" & Timepoint == "2dpi"), vjust = 0, size = 2) + scale_color_manual(values = c("blue","red")) + scale_y_log10(labels = scales::percent_format()) + ggtitle("p20097_Tim Bulk BAL % viral reads")
+
+countFileListP20097 <- dir(dataPath,pattern = "alaHtseq.txt" )
+fileSIDP20097 <- unlist(lapply(str_split(countFileListP20097,"_",n = 2),"[",1))
+
+sampleTableP20097 <- data.frame(SampleID = fileSIDP20097, fileName = countFileListP20097) %>% left_join(mapTabMeta)
+sampleTableP20097 <- mutate(sampleTableP20097, SubjectInd = if_else(SubjectID %in% treatedList, paste0("SI",lapply(SubjectID, function(x) which(x == treatedList))), paste0("SI",lapply(SubjectID, function(x) which(x == untreatedList)))))
+sampleTableP20097$SubjectInd <- as.factor(sampleTableP20097$SubjectInd)
+sampleTableP20097$Timepoint <- sub("-","minus",sampleTableP20097$Timepoint)
+sampleTableP20097$Timepoint <- factor(sampleTableP20097$Timepoint, c("minus5dpi","1dpi","2dpi","4dpi","6dpi","7dpi","8dpi","Necropsy"))
+## create infected factor for pathogenesis infected vs treated samples
+sampleTableP20097 <- sampleTableP20097 %>% mutate(infected = as.factor(if_else(Treated == "treated" & !(Timepoint %in% c("minus5dpi","1dpi","2dpi")), "treated","infected")))
+PBMCsampleTableP20097 <- sampleTableP20097 %>% filter(Source == "PBMC") %>% droplevels()
+BALsampleTableP20097 <- sampleTableP20097 %>% filter(Source == "BAL") %>% droplevels()
+
+
+```
+
+
+## Preprocess
+
+
+```{r p20097_DESeqPreprocess, dependson="p20097_SampleData", cache=TRUE, echo=TRUE, include=FALSE, warning=FALSE}
+
+ddsPBMCP20097 <- DESeqDataSetFromHTSeqCount(PBMCsampleTableP20097, dataPath, design = ~ SubjectInd + Treated * Timepoint)
+ddsPBMCP20097 <- DESeq(ddsPBMCP20097, parallel = TRUE)
+PBMCresultsNamesP20097 <- resultsNames(ddsPBMCP20097)
+# PBMCresultsNamesP20097
+#  [1] "Intercept"                          "SubjectInd_SI2_vs_SI1"             
+#  [3] "SubjectInd_SI3_vs_SI1"              "SubjectInd_SI4_vs_SI1"             
+#  [5] "Treated_untreated_vs_treated"       "Timepoint_1dpi_vs_minus5dpi"       
+#  [7] "Timepoint_2dpi_vs_minus5dpi"        "Timepoint_4dpi_vs_minus5dpi"       
+#  [9] "Timepoint_6dpi_vs_minus5dpi"        "Timepoint_7dpi_vs_minus5dpi"       
+# [11] "Timepoint_8dpi_vs_minus5dpi"        "Timepoint_Necropsy_vs_minus5dpi"   
+# [13] "Treateduntreated.Timepoint1dpi"     "Treateduntreated.Timepoint2dpi"    
+# [15] "Treateduntreated.Timepoint4dpi"     "Treateduntreated.Timepoint6dpi"    
+# [17] "Treateduntreated.Timepoint7dpi"     "Treateduntreated.Timepoint8dpi"    
+# [19] "Treateduntreated.TimepointNecropsy"
+# rldPBMCP20097 <- rlog(ddsPBMCP20097, blind = FALSE, fitType = "parametric")
+vstPBMCP20097 <- varianceStabilizingTransformation(ddsPBMCP20097, blind = FALSE, fitType = "parametric")
+
+ddsBALP20097 <- DESeqDataSetFromHTSeqCount(BALsampleTableP20097, dataPath, design = ~ SubjectInd + Treated * Timepoint)
+ddsBALP20097 <- DESeq(ddsBALP20097, parallel = TRUE)
+BALresultsNamesP20097 <- resultsNames(ddsBALP20097)
+# BALresultsNamesP20097
+#  [1] "Intercept"                          "SubjectInd_SI2_vs_SI1"             
+#  [3] "SubjectInd_SI3_vs_SI1"              "SubjectInd_SI4_vs_SI1"             
+#  [5] "Treated_untreated_vs_treated"       "Timepoint_2dpi_vs_minus5dpi"       
+#  [7] "Timepoint_4dpi_vs_minus5dpi"        "Timepoint_7dpi_vs_minus5dpi"       
+#  [9] "Timepoint_Necropsy_vs_minus5dpi"    "Treateduntreated.Timepoint2dpi"    
+# [11] "Treateduntreated.Timepoint4dpi"     "Treateduntreated.Timepoint7dpi"    
+# [13] "Treateduntreated.TimepointNecropsy"
+# rldBALP20097 <- rlog(ddsBALP20097, blind = FALSE, fitType = "parametric")
+vstBALP20097 <- varianceStabilizingTransformation(ddsBALP20097, blind = FALSE, fitType = "parametric")
+
+## pathogenesis
+
+ddsPBMCPathP20097 <- DESeqDataSetFromHTSeqCount(PBMCsampleTableP20097, dataPath, design = ~ infected + SubjectInd +Timepoint)
+ddsPBMCPathP20097 <- DESeq(ddsPBMCPathP20097, parallel = TRUE)
+PBMCPathresultsNamesP20097 <- resultsNames(ddsPBMCPathP20097)
+# PBMCPathresultsNamesP20097
+#  [1] "Intercept"                       "infected_treated_vs_infected"   
+#  [3] "SubjectInd_SI2_vs_SI1"           "SubjectInd_SI3_vs_SI1"          
+#  [5] "SubjectInd_SI4_vs_SI1"           "Timepoint_1dpi_vs_minus5dpi"    
+#  [7] "Timepoint_2dpi_vs_minus5dpi"     "Timepoint_4dpi_vs_minus5dpi"    
+#  [9] "Timepoint_6dpi_vs_minus5dpi"     "Timepoint_7dpi_vs_minus5dpi"    
+# [11] "Timepoint_8dpi_vs_minus5dpi"     "Timepoint_Necropsy_vs_minus5dpi"
+# rldPBMCPathP20097 <- rlog(ddsPBMCPathP20097, blind = FALSE, fitType = "parametric")
+rldPBMCPathP20097forGSEA <- rldPBMCPathP20097[Mmul10ProteinCodingByENSID$gene_id,rldPBMCPathP20097$infected == "infected"]
+clsLinesPBMC <- c(paste0(c(length(rldPBMCPathP20097forGSEA$Timepoint),length(unique(rldPBMCPathP20097forGSEA$Timepoint)),1), collapse = " "),
+              paste0(c("#",unique(as.vector(rldPBMCPathP20097forGSEA$Timepoint))), collapse = " "),
+              paste0(rldPBMCPathP20097forGSEA$Timepoint, collapse = " "))
+write_lines(clsLinesPBMC, path = "PBMC_Timepoint.cls")
+assayPBMCPathP20097forGSEA <- assay(rldPBMCPathP20097forGSEA)
+assayPBMCPathP20097forGSEA <- assayPBMCPathP20097forGSEA[rowMins(assayPBMCPathP20097forGSEA)>0,]
+write_tsv(data.frame(Name = rownames(assayPBMCPathP20097forGSEA), Description = "na", assayPBMCPathP20097forGSEA), path = "PBMC_rlog_forGSEA.txt")
+
+# rlog data for heatmaps and lineplots
+# first filter for protein coding and pathogenesis (infected == "infected") samples.
+rldPBMCPathP20097forPlots <- rldPBMCPathP20097[Mmul10ProteinCodingByENSID$gene_id,rldPBMCPathP20097$infected == "infected"]
+# relabel with gene symbols
+rownames(rldPBMCPathP20097forPlots) <- Mmul10SymbolFromID(rownames(rldPBMCPathP20097forPlots))
+# find Timepoint medians
+timepointMediansPBMCPathP20097 <- sapply(levels(rldPBMCPathP20097forPlots$Timepoint), function(lvl) rowMedians(assay(rldPBMCPathP20097forPlots)[,rldPBMCPathP20097forPlots$Timepoint == lvl]))
+# get median Baseline (-5dpi) normalized values
+rlogFromMedBaselinePBMCPathP20097 <- assay(rldPBMCPathP20097forPlots) - timepointMediansPBMCPathP20097[,"minus5dpi"]
+
+vstPBMCPathP20097 <- varianceStabilizingTransformation(ddsPBMCPathP20097, blind = FALSE, fitType = "parametric")
+
+ddsBALPathP20097 <- DESeqDataSetFromHTSeqCount(BALsampleTableP20097, dataPath, design = ~ infected + SubjectInd + Timepoint)
+ddsBALPathP20097 <- DESeq(ddsBALPathP20097, parallel = TRUE)
+BALPathresultsNamesP20097 <- resultsNames(ddsBALPathP20097)
+# BALPathresultsNamesP20097
+# [1] "Intercept"                       "infected_treated_vs_infected"   
+# [3] "SubjectInd_SI2_vs_SI1"           "SubjectInd_SI3_vs_SI1"          
+# [5] "SubjectInd_SI4_vs_SI1"           "Timepoint_2dpi_vs_minus5dpi"    
+# [7] "Timepoint_4dpi_vs_minus5dpi"     "Timepoint_7dpi_vs_minus5dpi"    
+# [9] "Timepoint_Necropsy_vs_minus5dpi"
+# rldBALPathP20097 <- rlog(ddsBALPathP20097, blind = FALSE, fitType = "parametric")
+rldBALPathP20097forGSEA <- rldBALPathP20097[Mmul10ProteinCodingByENSID$gene_id,rldBALPathP20097$infected == "infected"]
+clsLinesBAL <- c(paste0(c(length(rldBALPathP20097forGSEA$Timepoint),length(unique(rldBALPathP20097forGSEA$Timepoint)),1), collapse = " "),
+              paste0(c("#",unique(as.vector(rldBALPathP20097forGSEA$Timepoint))), collapse = " "),
+              paste0(rldBALPathP20097forGSEA$Timepoint, collapse = " "))
+write_lines(clsLinesBAL, path = "BAL_Timepoint.cls")
+assayBALPathP20097forGSEA <- assay(rldBALPathP20097forGSEA)
+assayBALPathP20097forGSEA <- assayBALPathP20097forGSEA[rowMins(assayBALPathP20097forGSEA)>0,]
+write_tsv(data.frame(Name = rownames(assayBALPathP20097forGSEA), Description = "na", assayBALPathP20097forGSEA), path = "BAL_rlog_forGSEA.txt")
+
+# rlog data for heatmaps and lineplots
+# first filter for protein coding and pathogenesis (infected == "infected") samples.
+rldBALPathP20097forPlots <- rldBALPathP20097[Mmul10ProteinCodingByENSID$gene_id,rldBALPathP20097$infected == "infected"]
+# relabel with gene symbols
+rownames(rldBALPathP20097forPlots) <- Mmul10SymbolFromID(rownames(rldBALPathP20097forPlots))
+# find Timepoint medians
+timepointMediansBALPathP20097 <- sapply(levels(rldBALPathP20097forPlots$Timepoint), function(lvl) rowMedians(assay(rldBALPathP20097forPlots)[,rldBALPathP20097forPlots$Timepoint == lvl]))
+# get median Baseline (-5dpi) normalized values
+rlogFromMedBaselineBALPathP20097 <- assay(rldBALPathP20097forPlots) - timepointMediansBALPathP20097[,"minus5dpi"]
+
+vstBALPathP20097 <- varianceStabilizingTransformation(ddsBALPathP20097, blind = FALSE, fitType = "parametric")
+
+
+
+```
+
+## PCA
+
+```{r p20097_PCA, dependson="p20097_DESeqPreprocess", cache=TRUE, echo=TRUE, results='asis', warning=FALSE}
+
+# vstPBMCP20097@colData$Timepoint <- relevel(vstPBMCP20097@colData$Timepoint, "minus5dpi")
+pcaPlotGKT(vstPBMCP20097, intgroup = c("SubjectID","Treated","Timepoint"), xpc = 1, ypc = 2) + theme_bw() + geom_point(aes(shape = Treated, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = Treated, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk PBMC PCA")
+
+pcaPBMCPC1vsPC2 <- pcaPlotGKT(vstPBMCP20097, intgroup = c("SubjectID","Treated","Timepoint"), xpc = 1, ypc = 2) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2, type = "norm") + geom_point(aes(shape = Treated, fill = Timepoint), size = 2) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = Treated, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk PBMC PCA (PC1 vs PC2)")
+ggsave(pcaPBMCPC1vsPC2, filename = "pcaPBMC_PC1vsPC2.pdf", units = "in", width = 11, height = 8.5, scale = 1)
+pcaPBMCPC1vsPC2
+
+```
+
+
+
+```{r}
+
+pcaPBMCPC2vsPC4 <- pcaPlotGKT(vstPBMCP20097, intgroup = c("SubjectID","Treated","Timepoint"), xpc = 2, ypc = 4) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2, type = "norm") + geom_point(aes(shape = Treated, fill = Timepoint), size = 2) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = Treated, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk PBMC PCA (PC2 vs PC4)")
+ggsave(pcaPBMCPC2vsPC4, filename = "pcaPBMC_PC2vsPC4.pdf", units = "in", width = 11, height = 8.5, scale = 1)
+pcaPBMCPC2vsPC4
+
+```
+
+
+
+```{r}
+
+# vstBALP20097@colData$Timepoint <- relevel(vstBALP20097@colData$Timepoint, "minus5dpi")
+pcaPlotGKT(vstBALP20097[,vstBALP20097@colData$SubjectID !="RVf12"], intgroup = c("SubjectID","Treated","Timepoint"), xpc = 2, ypc = 3) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2) + geom_point(aes(shape = Treated, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = Treated, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk BAL PCA (PC2 vs PC3)")
+
+
+## pathogenesis
+
+pcaPBMCinfPC1vsPC2 <- pcaPlotGKT(vstPBMCPathP20097[,vstPBMCPathP20097@colData$infected == "infected"], intgroup = c("SubjectID","infected","Timepoint"), xpc = 1, ypc = 2) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2, type = "norm") + geom_point(aes(shape = infected, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = infected, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk PBMC Pathogenesis PCA")
+ggsave(pcaPBMCinfPC1vsPC2, filename = "pcsPBMC_Infected_PC1vsPC2.pdf", units = "in", width = 11, height = 8.5, scale = 1)
+pcaPBMCinfPC1vsPC2
+
+```
+
+```{r}
+
+pcaPBMCinfPC2vsPC3 <- pcaPlotGKT(vstPBMCPathP20097[,vstPBMCPathP20097@colData$infected == "infected"], intgroup = c("SubjectID","infected","Timepoint"), xpc = 2, ypc = 3) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2, type = "norm") + geom_point(aes(shape = infected, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = infected, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk PBMC Pathogenesis PCA (PC2 vs PC3)")
+ggsave(pcaPBMCinfPC2vsPC3, filename = "pcsPBMC_Infected_PC2vsPC3.pdf", units = "in", width = 11, height = 8.5, scale = 1)
+pcaPBMCinfPC2vsPC3
+
+
+```
+
+
+
+```{r}
+
+pcaPlotGKT(vstPBMCPathP20097[,vstPBMCPathP20097@colData$infected == "infected" & vstPBMCPathP20097$Timepoint %in% c("minus5dpi","1dpi","2dpi")], intgroup = c("SubjectID","infected","Timepoint"), xpc = 2, ypc = 4) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2) + geom_point(aes(shape = infected, fill = Timepoint), size = 4) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = infected, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk PBMC Pathogenesis PCA (PC2 vs PC4)")
+
+
+```
+
+```{r}
+
+pcaBALinfPC1vsPC2 <- pcaPlotGKT(vstBALPathP20097[,vstBALPathP20097@colData$Timepoint %in% c("minus5dpi","2dpi","4dpi","7dpi") & vstBALPathP20097@colData$infected != "treated"], intgroup = c("SubjectID","infected","Timepoint"), xpc = 1, ypc = 2) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2, type = "norm") + geom_point(aes(shape = infected, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = infected, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk BAL Pathogenesis PCA")
+ggsave(pcaBALinfPC1vsPC2, filename = "pcsBAL_Infected_PC1vsPC2.pdf", units = "in", width = 11, height = 8.5, scale = 1)
+pcaBALinfPC1vsPC2
+
+
+```
+
+```{r}
+
+pcaBALinfPC3vsPC5 <- pcaPlotGKT(vstBALPathP20097[,vstBALPathP20097@colData$infected == "infected"], intgroup = c("SubjectID","infected","Timepoint"), xpc = 3, ypc = 5) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2, type = "norm") + geom_point(aes(shape = infected, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = infected, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk BAL Pathogenesis PCA (PC3 vs PC5)")
+ggsave(pcaBALinfPC3vsPC5, filename = "pcsBAL_Infected_PC3vsPC5.pdf", units = "in", width = 11, height = 8.5, scale = 1)
+pcaBALinfPC3vsPC5
+
+
+```
+
+```{r}
+
+pcaPlotGKT(vstBALPathP20097[,vstBALPathP20097@colData$infected == "infected" & vstBALPathP20097@colData$Timepoint %in% c("minus5dpi","2dpi")], intgroup = c("SubjectID","infected","Timepoint"), xpc = 2, ypc = 3) + theme_bw() + stat_ellipse(mapping = aes(fill = Timepoint), geom = "polygon", level = 0.67, alpha = 0.2) + geom_point(aes(shape = infected, fill = Timepoint), size = 3) + scale_shape_manual(values = c(24,25)) +  geom_path(aes(color = infected, group=SubjectID), size = 0.2) + scale_fill_manual(values = c("#53B400","#C49A00","#F8766D","#A58AFF","#FB61D7","#00C094","#00B6EB","#377eb8")) + guides(fill = guide_legend(order = 1, override.aes = list(shape = 21, size = 3))) + scale_color_manual(values = c("blue","red")) + geom_text(aes(label = SubjectID), size = 2, hjust = 0.5, vjust = -1.5) + ggtitle("p20097_Tim Bulk BAL Pathogenesis PCA (PC2 vs PC3)")
+
+```
+
+
+## Results
+
+```{r p20097_Results, dependson="p20097_DESeqPreprocess", cache=TRUE, echo=TRUE, results='asis', warning=FALSE}
+
+## Pathogenesis results
+## starting with D1 D2
+
+## PBMC Pathogenesis
+
+# PBMCPathresultsNamesP20097 <- resultsNames(ddsPBMCPathP20097)
+# PBMCPathresultsNamesP20097
+#  [1] "Intercept"                       "infected_treated_vs_infected"   
+#  [3] "SubjectInd_SI2_vs_SI1"           "SubjectInd_SI3_vs_SI1"          
+#  [5] "SubjectInd_SI4_vs_SI1"           "Timepoint_1dpi_vs_minus5dpi"    
+#  [7] "Timepoint_2dpi_vs_minus5dpi"     "Timepoint_4dpi_vs_minus5dpi"    
+#  [9] "Timepoint_6dpi_vs_minus5dpi"     "Timepoint_7dpi_vs_minus5dpi"    
+# [11] "Timepoint_8dpi_vs_minus5dpi"     "Timepoint_Necropsy_vs_minus5dpi"
+
+resPBMCPathD1vsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","1dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("1dpi","minus5dpi")))
+# summary(resPBMCPathD1vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1009, 3.3%
+# LFC < 0 (down)     : 845, 2.8%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16400, 54%
+# (mean count < 4)
+
+resPBMCPathD2vsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","2dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("2dpi","minus5dpi")))
+# summary(resPBMCPathD2vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1241, 4.1%
+# LFC < 0 (down)     : 1325, 4.3%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16678, 55%
+# (mean count < 5)
+
+resPBMCPathD4vsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","4dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("4dpi","minus5dpi")))
+# summary(resPBMCPathD4vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 60, 0.2%
+# LFC < 0 (down)     : 63, 0.21%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16831, 55%
+# (mean count < 5)
+
+resPBMCPathD6vsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","6dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("6dpi","minus5dpi")))
+# summary(resPBMCPathD6vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 293, 0.96%
+# LFC < 0 (down)     : 237, 0.77%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 17623, 58%
+# (mean count < 9)
+
+resPBMCPathD7vsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","7dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("7dpi","minus5dpi")))
+# summary(resPBMCPathD7vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1258, 4.1%
+# LFC < 0 (down)     : 1013, 3.3%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16876, 55%
+# (mean count < 5)
+
+resPBMCPathD8vsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","8dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("8dpi","minus5dpi")))
+# summary(resPBMCPathD8vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1708, 5.6%
+# LFC < 0 (down)     : 1662, 5.4%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 15758, 52%
+# (mean count < 0)
+
+resPBMCPathNecvsPre <- results(ddsPBMCPathP20097, contrast = c("Timepoint","Necropsy","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCPathP20097, intgroup = "Timepoint", comp = c("Necropsy","minus5dpi")))
+# summary(resPBMCPathNecvsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1585, 5.2%
+# LFC < 0 (down)     : 1248, 4.1%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16908, 55%
+# (mean count < 5)
+
+resPBMCAllvsPre <- Mmul10Annot %>% left_join(as.annot.data.frame(resPBMCPathD1vsPre, subset = "PBMC", relabel = "Timepoint 1dpi vs minus5dpi", newlabel = "PBMC D1vsPre")) %>%
+  left_join(as.annot.data.frame(resPBMCPathD2vsPre, subset = "PBMC", relabel = "Timepoint 2dpi vs minus5dpi", newlabel = "PBMC D2vsPre")) %>%
+  left_join(as.annot.data.frame(resPBMCPathD4vsPre, subset = "PBMC", relabel = "Timepoint 4dpi vs minus5dpi", newlabel = "PBMC D4vsPre")) %>%
+  left_join(as.annot.data.frame(resPBMCPathD6vsPre, subset = "PBMC", relabel = "Timepoint 6dpi vs minus5dpi", newlabel = "PBMC D6vsPre")) %>%
+  left_join(as.annot.data.frame(resPBMCPathD7vsPre, subset = "PBMC", relabel = "Timepoint 7dpi vs minus5dpi", newlabel = "PBMC D7vsPre")) %>%
+  left_join(as.annot.data.frame(resPBMCPathD8vsPre, subset = "PBMC", relabel = "Timepoint 8dpi vs minus5dpi", newlabel = "PBMC D8vsPre")) %>%
+  left_join(as.annot.data.frame(resPBMCPathNecvsPre, subset = "PBMC", relabel = "Timepoint Necropsy vs minus5dpi", newlabel = "PBMC NecvsPre"))
+#write_excel_csv(resPBMCAllvsPre, path = "PBMC_AllvsPre_DESeq2_results.csv")
+arrange(resPBMCAllvsPre,`pvalue (Wald test p-value: PBMC D2vsPre)`) %>% write.xlsx(file = "PBMC_AllvsPre_DESeq2_results.xlsx", colNames = TRUE)
+
+
+## BAL Pathogenesis
+
+# BALPathresultsNamesP20097 <- resultsNames(ddsBALPathP20097)
+# BALPathresultsNamesP20097
+# [1] "Intercept"                       "infected_treated_vs_infected"   
+# [3] "SubjectInd_SI2_vs_SI1"           "SubjectInd_SI3_vs_SI1"          
+# [5] "SubjectInd_SI4_vs_SI1"           "Timepoint_2dpi_vs_minus5dpi"    
+# [7] "Timepoint_4dpi_vs_minus5dpi"     "Timepoint_7dpi_vs_minus5dpi"    
+# [9] "Timepoint_Necropsy_vs_minus5dpi"
+
+
+resBALPathD2vsPre <- results(ddsBALPathP20097, contrast = c("Timepoint","2dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsBALPathP20097, intgroup = "Timepoint", comp = c("2dpi","minus5dpi")))
+# summary(resBALPathD2vsPre)
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 369, 1.2%
+# LFC < 0 (down)     : 16, 0.051%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16597, 53%
+# (mean count < 3)
+
+resBALPathD4vsPre <- results(ddsBALPathP20097, contrast = c("Timepoint","4dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsBALPathP20097, intgroup = "Timepoint", comp = c("4dpi","minus5dpi")))
+# summary(resBALPathD4vsPre)
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 698, 2.2%
+# LFC < 0 (down)     : 468, 1.5%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16251, 52%
+# (mean count < 0)
+
+resBALPathD7vsPre <- results(ddsBALPathP20097, contrast = c("Timepoint","7dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsBALPathP20097, intgroup = "Timepoint", comp = c("7dpi","minus5dpi")))
+# summary(resBALPathD7vsPre)
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 862, 2.7%
+# LFC < 0 (down)     : 412, 1.3%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16161, 52%
+# (mean count < 0)
+
+resBALPathNecvsPre <- results(ddsBALPathP20097, contrast = c("Timepoint","Necropsy","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsBALPathP20097, intgroup = "Timepoint", comp = c("Necropsy","minus5dpi")))
+# summary(resBALPathNecvsPre)
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1870, 6%
+# LFC < 0 (down)     : 1539, 4.9%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16757, 53%
+# (mean count < 0)
+tidyresBALPathNecvsPre <- results(ddsBALPathP20097, contrast = c("Timepoint","Necropsy","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsBALPathP20097, intgroup = "Timepoint", comp = c("Necropsy","minus5dpi")), tidy = TRUE)
+
+resBALAllvsPre <- Mmul10Annot %>% left_join(as.annot.data.frame(resBALPathD2vsPre, subset = "BAL", relabel = "Timepoint 2dpi vs minus5dpi", newlabel = "BAL D2vsPre")) %>% left_join(as.annot.data.frame(resBALPathD4vsPre, subset = "BAL", relabel = "Timepoint 4dpi vs minus5dpi", newlabel = "BAL D4vsPre")) %>% left_join(as.annot.data.frame(resBALPathD7vsPre, subset = "BAL", relabel = "Timepoint 7dpi vs minus5dpi", newlabel = "BAL D7vsPre")) %>% left_join(as.annot.data.frame(resBALPathNecvsPre, subset = "BAL", relabel = "Timepoint Necropsy vs minus5dpi", newlabel = "BAL NecvsPre"))
+#write_excel_csv(resBALAllvsPre, path = "BAL_AllvsPre_DESeq2_results.csv")
+arrange(resBALAllvsPre,`pvalue (Wald test p-value: BAL D2vsPre)`) %>% write.xlsx(file = "BAL_AllvsPre_DESeq2_results.xlsx", colNames = TRUE)
+
+vParam <- list(
+  fcThresh = 1
+  , padjThresh = 0.05
+  , baseMeanThresh = 20
+  , annotateSize = 2
+)
+evParam <- list(
+#      , lab = volcanoData$gene_symbol
+    x = 'log2FoldChange'
+    , y = 'pvalue'
+#    , pCutoff = pThresh
+#    , FCcutoff = fcThresh
+#    , selectLab = volcanoDataFiltered$gene_symbol[
+#      c(
+#        1:31
+#        , length(volcanoDataFiltered$gene_symbol) - (20:0)
+#        )
+#      ]
+    , xlim = c(-4,8)
+    , ylim = c(0,35)
+#    , axisLabSize = 7
+    , axisLabSize = 6
+    , title = title
+#    , subtitle = str_remove(object@elementMetadata$description[2],".*: ")
+#    , titleLabSize = 12
+    , titleLabSize = 7
+#    , subtitleLabSize = 8
+    , subtitleLabSize = 4
+    , caption = ""
+    , captionLabSize = 0
+    , legendPosition = 'none'
+#    , labSize = 3
+    , labSize = 2
+    , labhjust = 0.5
+#    , pointSize = 0.5
+    , pointSize = 0.1
+#    , colCustom = keyvals
+    , labCol = "black"
+    ,  labFace = 'bold'
+    , cutoffLineWidth = 0.05
+#    , hlineWidth = 0.05
+    , hlineWidth = 0.05
+#    , vlineWidth = 0.05
+    , vlineWidth = 0.05
+    , borderWidth = 0.1
+    , boxedLabels = FALSE
+    , drawConnectors = TRUE
+    , widthConnectors = 0.1
+    , lengthConnectors = unit(0.001, "npc")
+#    , colConnectors = "grey"
+    , colConnectors = "purple"
+
+)
+
+Mmul10EnhancedVolcano <- function(object, fcThresh = 1, padjThresh = 0.05, baseMeanThresh = 20, xlim = evParam$xlim, ylim = evParam$ylim, title = "volcano plot", subtitle = "comparison") 
+{
+  volcanoData <- Mmul10Annot %>% 
+    right_join(
+      as.data.frame(object) %>% 
+        rownames_to_column(var = "gene_id"))  %>% 
+    filter(gene_id %in% Mmul10ProteinCodingByENSID$gene_id & 
+             baseMean > baseMeanThresh & lfcSE < 1) %>% 
+    arrange(-log2FoldChange)
+  
+  pThresh <- mean(
+    (as.data.frame(object) %>% 
+       rownames_to_column(var = "gene_id") %>% 
+       filter(padj<0.05) %>% arrange(-padj) %>% 
+       select(pvalue)
+     )$pvalue[1],
+    (as.data.frame(object) %>% 
+       rownames_to_column(var = "gene_id") %>% 
+       filter(padj>0.05) %>% arrange(padj) %>% 
+       select(pvalue)
+     )$pvalue[1]
+    )
+  
+  volcanoDataFiltered <- volcanoData %>% 
+    filter(
+      padj < padjThresh
+      & abs(log2FoldChange) >= fcThresh
+      )
+  
+  upCount <- count(volcanoDataFiltered %>% filter(log2FoldChange > 0))
+  downCount <- count(volcanoDataFiltered %>% filter(log2FoldChange < 0))
+  keyvals <- ifelse(volcanoData$padj < padjThresh,
+                    ifelse(volcanoData$log2FoldChange > fcThresh,
+                           '#d95f02',
+                           ifelse(volcanoData$log2FoldChange < -fcThresh,
+                                  '#1b9e77',
+                                  'grey')),
+                    'grey')
+  
+  keyvals[is.na(keyvals)] <- 'grey'
+  
+  names(keyvals)[keyvals == '#d95f02'] <- "Up"
+  names(keyvals)[keyvals == '#1b9e77'] <- "Down"
+  names(keyvals)[keyvals == 'grey'] <- "NS"
+  
+  (EnhancedVolcano(
+    volcanoData
+    , lab = volcanoData$gene_symbol
+    , x = 'log2FoldChange'
+    , y = 'pvalue'
+    , pCutoff = pThresh
+    , FCcutoff = fcThresh
+    , selectLab = volcanoDataFiltered$gene_symbol[
+      c(
+        1:31
+        , length(volcanoDataFiltered$gene_symbol) - (20:0)
+        )
+      ]
+#    , xlim = c(-4,8)
+    , xlim = xlim
+#    , ylim = c(0,35)
+    , ylim = ylim
+#    , axisLabSize = 7
+    , axisLabSize = evParam$axisLabSize
+    , title = title
+#    , subtitle = str_remove(object@elementMetadata$description[2],".*: ")
+    , subtitle = NA
+#    , titleLabSize = 12
+    , titleLabSize = evParam$titleLabSize
+#    , subtitleLabSize = 8
+    , subtitleLabSize = evParam$subtitleLabSize
+    , caption = ""
+    , captionLabSize = 0
+    , legendPosition = 'none'
+#    , labSize = 3
+#    , labSize = evParam$labSize
+    , labSize = 0.0
+    , labhjust = 0.5
+#    , pointSize = 0.5
+    , pointSize = evParam$pointSize
+    , colCustom = keyvals
+    , labCol = "black"
+    ,  labFace = 'bold'
+    , cutoffLineWidth = evParam$cutoffLineWidth
+#    , hlineWidth = 0.05
+    , hlineWidth = evParam$hlineWidth
+#    , vlineWidth = 0.05
+    , vlineWidth = evParam$vlineWidth
+    , borderWidth = 0.1
+    , boxedLabels = FALSE
+#    , drawConnectors = TRUE
+    , drawConnectors = FALSE
+    , widthConnectors = 0.1
+    , lengthConnectors = unit(0.001, "npc")
+#    , colConnectors = "grey"
+    , colConnectors = evParam$colConnectors
+    ) 
+    + annotate(
+      "text"
+      , label = paste0("Down=",downCount)
+      , size = vParam$annotateSize
+      , x = -2.25
+      , y = 0
+      , hjust = 0.5
+      ) 
+    + annotate(
+      "text"
+      , label = paste0("Up=",upCount)
+      , size = vParam$annotateSize
+      , x = 2.25
+      , y = 0
+      , hjust = 0.5
+      ) 
+    + theme(
+      plot.title = element_text(hjust = 0.5, face = "plain", margin = margin(b = 0))
+#      , plot.subtitle = element_text(margin = margin(b = 0))
+      , plot.subtitle = element_blank()
+      , plot.caption = element_blank()
+      , plot.margin = margin(2,2,2,2)
+      , axis.ticks = element_line(size = 0.1)
+      , axis.ticks.length = unit(2, "pt")
+      , axis.title.x = element_text(margin = margin(0,0,0,0))
+      , axis.text.x = element_text(hjust = 0.5, margin = margin(1,0,0,0))
+      , axis.title.y = element_text(margin = margin(0,0,0,0))
+      , axis.text.y = element_text(vjust = 0.5, margin = margin(0,0,0,1))
+      , panel.grid = element_line(size = 0.1)
+      )
+  )
+}
+
+DESeq2ResultsEnhancedVolcano <- function(object, fcThresh = 1, padjThresh = 0.05, baseMeanThresh = 20, title = "volcano plot", subtitle = "comparison") 
+{
+  volcanoData <- Mmul10Annot %>% right_join(as.data.frame(object) %>% rownames_to_column(var = "gene_id"))  %>% filter(gene_id %in% Mmul10ProteinCodingByENSID$gene_id & baseMean > baseMeanThresh & lfcSE < 1) %>% arrange(-log2FoldChange)
+  pThresh <- mean((as.data.frame(object) %>% rownames_to_column(var = "gene_id") %>% filter(padj<0.05) %>% arrange(-padj) %>% select(pvalue))$pvalue[1],(as.data.frame(object) %>% rownames_to_column(var = "gene_id") %>% filter(padj>0.05) %>% arrange(padj) %>% select(pvalue))$pvalue[1])
+  volcanoDataFiltered <- volcanoData %>% filter(padj < padjThresh & abs(log2FoldChange) >= fcThresh)
+  upCount <- count(volcanoDataFiltered %>% filter(log2FoldChange > 0))
+  downCount <- count(volcanoDataFiltered %>% filter(log2FoldChange < 0))
+  keyvals <- ifelse(volcanoData$padj < padjThresh,ifelse(volcanoData$log2FoldChange > fcThresh,'#d95f02',ifelse(volcanoData$log2FoldChange < -fcThresh,'#1b9e77','grey')),'grey')
+  keyvals[is.na(keyvals)] <- 'grey'
+  names(keyvals)[keyvals == '#d95f02'] <- "Up"
+  names(keyvals)[keyvals == '#1b9e77'] <- "Down"
+  names(keyvals)[keyvals == 'grey'] <- "NS"
+  EnhancedVolcano(volcanoData, lab = volcanoData$gene_symbol, x = 'log2FoldChange', y = 'pvalue', pCutoff = pThresh, FCcutoff = fcThresh, selectLab = volcanoDataFiltered$gene_symbol[c(1:31, length(volcanoDataFiltered$gene_symbol) - (20:0))], xlim = c(-4,8), ylim = c(0,35), axisLabSize = 7, title = title, subtitle = str_remove(object@elementMetadata$description[2],".*: "), titleLabSize = 12, subtitleLabSize = 8, caption = "", captionLabSize = 0, legendPosition = 'none', labSize = 3, labhjust = 0.5, pointSize = 0.5, colCustom = keyvals, labCol = "black",  labFace = 'bold', hlineWidth = 0.05, vlineWidth = 0.05, borderWidth = 0.1, boxedLabels = FALSE, drawConnectors = TRUE, widthConnectors = 0.1, lengthConnectors = unit(0.001, "npc"), colConnectors = "grey") + annotate("text", label = paste0("Down=",downCount), size = 3, x = -1.5, y=0, hjust = 0.5) + annotate("text", label = paste0("Up=",upCount), size = 3, x = 1.5, y=0, hjust = 0.5) + theme(plot.title = element_text(hjust = 0.5, face = "plain", margin = margin(b = 0)), plot.caption = element_blank(), plot.margin = margin(2,2,2,2), axis.ticks = element_line(size = 0.1), axis.ticks.length = unit(2, "pt"), axis.title.x = element_text(margin = margin(0,0,0,0)), axis.text.x = element_text(hjust = 0.5, margin = margin(1,0,0,0)), axis.title.y = element_text(margin = margin(0,0,0,0)), axis.text.y = element_text(vjust = 0.5, margin = margin(0,0,0,1)), panel.grid = element_line(size = 0.1))
+}
+
+volPBMCPathD1vsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathD1vsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathD1vsPre, filename = "volcanoPBMCPathogenesis_D1vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathD1vsPre
+
+volPBMCPathD2vsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathD2vsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathD2vsPre, filename = "volcanoPBMCPathogenesis_D2vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathD2vsPre
+
+fig2volPBMCPathD2vsPre <- Mmul10EnhancedVolcano(
+  resPBMCPathD2vsPre
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-3,6)
+  , ylim = c(0,20)
+  , title = "PBMC 2 d.p.i."
+)
+ggsave(fig2volPBMCPathD2vsPre, filename = "Fig2AvolPBMC2DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volPBMCPathD2vsPre, filename = "Fig2AvolPBMC2DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volPBMCPathD2vsPre, filename = "Fig2AvolPBMC2DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+
+volPBMCPathD4vsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathD4vsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathD4vsPre, filename = "volcanoPBMCPathogenesis_D4vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathD4vsPre
+
+
+fig2volPBMCPathD4vsPre <- Mmul10EnhancedVolcano(
+  resPBMCPathD4vsPre
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-4,4)
+  , ylim = c(0,8)
+  , title = "PBMC 4 d.p.i."
+  )
+ggsave(fig2volPBMCPathD4vsPre, filename = "Fig2AvolPBMC4DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volPBMCPathD4vsPre, filename = "Fig2AvolPBMC4DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volPBMCPathD4vsPre, filename = "Fig2AvolPBMC4DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+volPBMCPathD6vsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathD6vsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathD6vsPre, filename = "volcanoPBMCPathogenesis_D6vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathD6vsPre
+
+volPBMCPathD7vsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathD7vsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathD7vsPre, filename = "volcanoPBMCPathogenesis_D7vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathD7vsPre
+
+volPBMCPathD8vsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathD8vsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathD8vsPre, filename = "volcanoPBMCPathogenesis_D8vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathD8vsPre
+
+volPBMCPathNecvsPre <- DESeq2ResultsEnhancedVolcano(resPBMCPathNecvsPre, fcThresh = 1, title = "PBMC")
+ggsave(volPBMCPathNecvsPre, filename = "volcanoPBMCPathogenesis_NecVsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volPBMCPathNecvsPre
+
+fig2volPBMCPathNecvsPre <- Mmul10EnhancedVolcano(
+  resPBMCPathNecvsPre
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-3,5)
+  , ylim = c(0,15)
+  , title = "PBMC 10 d.p.i."
+  )
+ggsave(fig2volPBMCPathNecvsPre, filename = "Fig2CvolPBMC10DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volPBMCPathNecvsPre, filename = "Fig2CvolPBMC10DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volPBMCPathNecvsPre, filename = "Fig2CvolPBMC10DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+volBALPathD2vsPre <- DESeq2ResultsEnhancedVolcano(resBALPathD2vsPre, fcThresh = 1, title = "BAL")
+ggsave(volBALPathD2vsPre, filename = "volcanoBALPathogenesis_D2vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volBALPathD2vsPre
+
+fig2volBALPathD2vsPre <- Mmul10EnhancedVolcano(
+  resBALPathD2vsPre
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-3,6)
+  , ylim = c(0,35)
+  , title = "BAL 2 d.p.i."
+  )
+ggsave(fig2volBALPathD2vsPre, filename = "Fig2AvolBAL2DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volBALPathD2vsPre, filename = "Fig2AvolBAL2DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volBALPathD2vsPre, filename = "Fig2AvolBAL2DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+volBALPathD4vsPre <- DESeq2ResultsEnhancedVolcano(resBALPathD4vsPre, fcThresh = 1, title = "BAL")
+ggsave(volBALPathD4vsPre, filename = "volcanoBALPathogenesis_D4vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volBALPathD4vsPre
+
+fig2volBALPathD4vsPre <- Mmul10EnhancedVolcano(
+  resBALPathD4vsPre
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-4,6)
+  , ylim = c(0,18)
+  , title = "BAL 4 d.p.i."
+  )
+ggsave(fig2volBALPathD4vsPre, filename = "Fig2AvolBAL4DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volBALPathD4vsPre, filename = "Fig2AvolBAL4DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volBALPathD4vsPre, filename = "Fig2AvolBAL4DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+volBALPathD7vsPre <- DESeq2ResultsEnhancedVolcano(resBALPathD7vsPre, fcThresh = 1, title = "BAL")
+ggsave(volBALPathD7vsPre, filename = "volcanoBALPathogenesis_D7vsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volBALPathD7vsPre
+
+volBALPathNecvsPre <- DESeq2ResultsEnhancedVolcano(resBALPathNecvsPre, fcThresh = 1, title = "BAL")
+ggsave(volBALPathNecvsPre, filename = "volcanoBALPathogenesis_NecVsPre.pdf", units = "in", width = 10, height = 8, scale = 1)
+volBALPathNecvsPre
+
+
+fig2volBALPathNecvsPre <- Mmul10EnhancedVolcano(
+  resBALPathNecvsPre
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-3,8)
+  , ylim = c(0,25)
+  , title = "BAL 10 d.p.i."
+  )
+ggsave(fig2volBALPathNecvsPre, filename = "Fig2CvolBAL10DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volBALPathNecvsPre, filename = "Fig2CvolBAL10DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volBALPathNecvsPre, filename = "Fig2CvolBAL10DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+```
+
+
+
+```{r}
+
+gene_id_Mmul10 <- function(genes) {
+#  pull(filter(Mmul10Annot, gene_symbol %in% genes), gene_id) # doesn't preserve order
+  sapply(genes, function(gene) Mmul10Annot[which(Mmul10Annot$gene_symbol == gene),]$gene_id)
+}
+
+#lookup <- function(x, list, input, output) {
+#  x %>% inner_join(tibble(as.name(input)=list)) %>% arrange(match(as.name(input))) %>% #pull(as.name(output))
+#}
+
+gene_data_Mmul10 <- function(dds, genes) {
+  cnts <- counts(dds[gene_id_Mmul10(genes),], normalize = TRUE)
+  rownames(cnts) <- genes
+  as_tibble(cnts, rownames = NA) %>%
+    rownames_to_column(var = "gene_symbol") %>%
+    pivot_longer(-gene_symbol, names_to = "SampleID", values_to = "count") %>%
+    left_join(rownames_to_column(as.data.frame(colData(ddsBALPathP20097)),var = "SampleID"))
+}
+
+gene_data_Mmul10(ddsBALPathP20097,c("ACE2","IL1B","IL6")) %>%
+  ggplot(aes(x=Timepoint, y=count)) + 
+  geom_line(aes(color=infected, group=SubjectID)) +
+  facet_grid(gene_symbol ~ Treated)
+
+goi13_line <- gene_data_Mmul10(ddsBALPathP20097,c("IFNA8","IFNB1","CHIT1","MARCO","MRC1","APOBEC3A","FCN1","SPP1","FABP4","IL6","IL10","TNF","IL18")) %>%
+  mutate(TreatedBeyond = factor(if_else(Treated == "treated" & Timepoint != "minus5dpi","treated","untreated"), levels = c("untreated","treated"))) %>%
+  ggplot(aes(x=Timepoint, y=count)) + 
+  geom_line(aes(color=TreatedBeyond, group=SubjectID)) +
+  geom_text(aes(label=SubjectID), size = 2) +
+  scale_y_log10() +
+  facet_grid(gene_symbol ~ Treated, scales = "free")
+ggsave(goi13_line, filename = "GOI13_linePlots.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+
+covid_genes <- c("SARS-CoV2-5'UTR","SARS-CoV2-gp01_ORF1ab","SARS-CoV2-gp02_S","SARS-CoV2-gp03_ORF3a","SARS-CoV2-gp04_E","SARS-CoV2-gp05_M","SARS-CoV2-gp06_ORF6","SARS-CoV2-gp07_ORF7a","SARS-CoV2-gp09_ORF8","SARS-CoV2-gp10_N","SARS-CoV2-gp11_ORF10")
+covid_line <- as_tibble(counts(ddsBALPathP20097[covid_genes,]), rownames = NA) %>%
+  rownames_to_column(var = "gene") %>%
+  mutate(gene = str_remove(gene,"SARS-CoV2-")) %>%
+  pivot_longer(-gene, names_to = "SampleID", values_to = "count") %>%
+  left_join(rownames_to_column(as.data.frame(colData(ddsBALPathP20097)), var = "SampleID")) %>%
+  mutate(TreatedBeyond = factor(if_else(Treated == "treated" & Timepoint != "minus5dpi","treated","untreated"), levels = c("untreated","treated"))) %>%
+  ggplot(aes(x=Timepoint, y=count)) + 
+  geom_line(aes(color=TreatedBeyond, group=SubjectID)) +
+  geom_text(aes(label=SubjectID), size = 2) +
+  scale_y_log10() +
+  facet_grid(gene ~ Treated, scales = "free") +
+  theme_bw()
+ggsave(covid_line, filename = "Covid_linePlots.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+
+
+ifngoi_line <- gene_data_Mmul10(ddsBALPathP20097,c("IFNA6","IFNA8","IFNB1")) %>%
+  mutate(TreatedBeyond = factor(if_else(Treated == "treated" & Timepoint != "minus5dpi","treated","untreated"), levels = c("untreated","treated"))) %>%
+  ggplot(aes(x=Timepoint, y=count)) + 
+  geom_line(aes(color=TreatedBeyond, group=SubjectID)) +
+  geom_text(aes(label=SubjectID), size = 2) +
+  scale_y_log10() +
+  facet_grid(gene_symbol ~ Treated, scales = "free")
+#ggsave(infgoi_line, filename = "IFNGOI_linePlots.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+
+ifnwb <- createWorkbook()
+addWorksheet(ifnwb, "INFA Aggregate")
+writeData(ifnwb,"INFA Aggregate",(gene_data_Mmul10(ddsBALPathP20097,str_subset(Mmul10Annot$gene_symbol,"IFNA[0-9]")) %>% group_by(SubjectID, Timepoint, Treated) %>% summarize(IFNAcount = sum(count))),rowNames = TRUE)
+addWorksheet(ifnwb, "IFNA Separate")
+writeData(ifnwb,"IFNA Separate",(gene_data_Mmul10(ddsBALPathP20097,str_subset(Mmul10Annot$gene_symbol,"IFNA[0-9]")) %>% group_by(SubjectID, Timepoint, Treated) %>% select(gene_symbol,SubjectID,Timepoint,Treated,count)), rowNames = TRUE)
+addWorksheet(ifnwb, "IFNB1")
+writeData(ifnwb,"IFNB1",(gene_data_Mmul10(ddsBALPathP20097,str_subset(Mmul10Annot$gene_symbol,"IFNB[0-9]")) %>% group_by(SubjectID, Timepoint, Treated) %>% select(gene_symbol,SubjectID,Timepoint,Treated,count)), rowNames = TRUE)
+saveWorkbook(ifnwb, "IFN_values.xlsx", overwrite = TRUE)
+
+IFNA_acute_lineplot <- gene_data_Mmul10(ddsBALPathP20097,str_subset(Mmul10Annot$gene_symbol,"IFNA[0-9]")) %>% filter(Timepoint %in% c("minus5dpi","2dpi")) %>% group_by(SubjectID, Timepoint) %>% summarize(IFNAcount = sum(count)) %>% ggplot(aes(x=Timepoint, y=IFNAcount)) + geom_line(aes(group = SubjectID)) + geom_text_repel(aes(label=SubjectID)) + theme_bw() + scale_y_log10() 
+ggsave(IFNA_acute_lineplot,filename = "INFA_acute_timecourse.pdf")
+
+IFNA_untreated_lineplot <- gene_data_Mmul10(ddsBALPathP20097,str_subset(Mmul10Annot$gene_symbol,"IFNA[0-9]")) %>% filter(Treated == "untreated") %>% group_by(SubjectID, Timepoint) %>% summarize(IFNAcount = sum(count)) %>% ggplot(aes(x=Timepoint, y=IFNAcount)) + geom_line(aes(group = SubjectID)) + geom_text_repel(aes(label=SubjectID)) + theme_bw() + scale_y_log10() 
+ggsave(IFNA_untreated_lineplot,filename = "INFA_untreated_full_timecourse.pdf")
+
+plot_symbol = "IFNA8"
+plot_symbol = "IFNB1"
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+
+
+plot_symbol = "ACE2"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+
+plot_symbol = "ACE2"
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == "ACE2"), gene_id)),"SubjectID","Timepoint","infected","ACE2 in Bulk BAL") + scale_y_log10()
+
+plot_symbol = "IL1B"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "IL6"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "TNF"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "IL10"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "IL1B"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "IFNB1"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CCL4L1"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CXCL10"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CXCL3"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CXCL8"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "MX1"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CXCL13"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CD38"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CXCL1"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "CXCL11"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_symbol = "TLR7"
+linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+
+plot_id <- "ENSMMUG00000050757"
+linePlotsGKT(ddsBALPathP20097,plot_id,"SubjectID","Timepoint","infected",paste0(as.character(select(filter(Mmul10Annot, gene_id == plot_id),gene_symbol))," in Bulk BAL")) + scale_y_log10()
+
+plot_id <- "ENSMMUG00000008505"
+linePlotsGKT(ddsBALPathP20097,plot_id,"SubjectID","Timepoint","infected",paste0(as.character(select(filter(Mmul10Annot, gene_id == plot_id),gene_symbol))," in Bulk BAL")) + scale_y_log10()
+
+```
+
+
+```{r}
+
+# PBMCresultsNamesP20097
+#  [1] "Intercept"                          "SubjectInd_SI2_vs_SI1"             
+#  [3] "SubjectInd_SI3_vs_SI1"              "SubjectInd_SI4_vs_SI1"             
+#  [5] "Treated_untreated_vs_treated"       "Timepoint_1dpi_vs_minus5dpi"       
+#  [7] "Timepoint_2dpi_vs_minus5dpi"        "Timepoint_4dpi_vs_minus5dpi"       
+#  [9] "Timepoint_6dpi_vs_minus5dpi"        "Timepoint_7dpi_vs_minus5dpi"       
+# [11] "Timepoint_8dpi_vs_minus5dpi"        "Timepoint_Necropsy_vs_minus5dpi"   
+# [13] "Treateduntreated.Timepoint1dpi"     "Treateduntreated.Timepoint2dpi"    
+# [15] "Treateduntreated.Timepoint4dpi"     "Treateduntreated.Timepoint6dpi"    
+# [17] "Treateduntreated.Timepoint7dpi"     "Treateduntreated.Timepoint8dpi"    
+# [19] "Treateduntreated.TimepointNecropsy"
+
+# Treated 1dpi/baseline
+resTreatedPBMCD1vsPre <- results(ddsPBMCP20097, contrast = c("Timepoint","1dpi","minus5dpi"), alpha = 0.05, filter = maxMinFilter(ddsPBMCP20097, intgroup = "Timepoint", comp = c("1dpi","minus5dpi")))
+summary(resTreatedPBMCD1vsPre)
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 101, 0.33%
+# LFC < 0 (down)     : 88, 0.29%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16670, 55%
+# (mean count < 5)
+
+
+```
+
+# Untreated 1dpi/baseline
+
+```{r p20097_Results_1, dependson="p20097_DESeqPreprocess", cache=TRUE, echo=TRUE, results='asis', warning=FALSE}
+summary(results(ddsPBMCP20097, contrast = list(c("Timepoint_1dpi_vs_minus5dpi","Treateduntreated.Timepoint1dpi")), alpha = 0.05, filter = maxMinFilter(ddsPBMCP20097, intgroup = "Timepoint", comp = c("1dpi","minus5dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 130, 0.43%
+# LFC < 0 (down)     : 45, 0.15%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 17210, 56%
+# (mean count < 7)
+
+# Treated 2dpi/baseline
+# summary(results(ddsPBMCP20097, contrast = list(c("Timepoint_2dpi_vs_minus5dpi")), alpha = 0.05, filter = maxMinFilter(ddsPBMCP20097, intgroup = "Timepoint", comp = c("2dpi","minus5dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 309, 1%
+# LFC < 0 (down)     : 188, 0.61%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 17487, 57%
+# (mean count < 8)
+
+# Untreated 2dpi/baseline
+# summary(results(ddsPBMCP20097, contrast = list(c("Timepoint_2dpi_vs_minus5dpi","Treateduntreated.Timepoint2dpi")), alpha = 0.05, filter = maxMinFilter(ddsPBMCP20097, intgroup = "Timepoint", comp = c("2dpi","minus5dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 597, 2%
+# LFC < 0 (down)     : 338, 1.1%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 16678, 55%
+# (mean count < 5)
+
+
+# PBMC untreated vs treated
+# summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 2, 0.0065%
+# LFC < 0 (down)     : 3, 0.0098%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+# 
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint1dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 2, 0.0065%
+# LFC < 0 (down)     : 2, 0.0065%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+# 
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint2dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 37, 0.12%
+# LFC < 0 (down)     : 36, 0.12%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 15287, 50%
+# (mean count < 3)
+# 
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint4dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 3, 0.0098%
+# LFC < 0 (down)     : 4, 0.013%
+# outliers [1]       : 0, 0%
+#
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint6dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 0, 0%
+# LFC < 0 (down)     : 1, 0.0033%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+# 
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint7dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 3, 0.0098%
+# LFC < 0 (down)     : 3, 0.0098%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+# 
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint8dpi"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 4, 0.013%
+# LFC < 0 (down)     : 4, 0.013%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 11759, 38%
+# (mean count < 0)
+# 
+# > summary(results(ddsPBMCP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.TimepointNecropsy"))))
+# out of 30582 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 4, 0.013%
+# LFC < 0 (down)     : 2, 0.0065%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+
+
+
+# BALresultsNamesP20097
+#  [1] "Intercept"                          "SubjectInd_SI2_vs_SI1"             
+#  [3] "SubjectInd_SI3_vs_SI1"              "SubjectInd_SI4_vs_SI1"             
+#  [5] "Treated_untreated_vs_treated"       "Timepoint_2dpi_vs_minus5dpi"       
+#  [7] "Timepoint_4dpi_vs_minus5dpi"        "Timepoint_7dpi_vs_minus5dpi"       
+#  [9] "Timepoint_Necropsy_vs_minus5dpi"    "Treateduntreated.Timepoint2dpi"    
+# [11] "Treateduntreated.Timepoint4dpi"     "Treateduntreated.Timepoint7dpi"    
+# [13] "Treateduntreated.TimepointNecropsy"
+
+# BAL Treated d2 vs baseline
+# summary(results(ddsBALP20097, contrast = list(c("Timepoint_2dpi_vs_minus5dpi")), alpha = 0.05))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 261, 0.83%
+# LFC < 0 (down)     : 2, 0.0064%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 12675, 40%
+# (mean count < 1)
+
+# BAL Untreated d2 vs baseline
+# summary(results(ddsBALP20097, contrast = list(c("Timepoint_2dpi_vs_minus5dpi","Treateduntreated.Timepoint2dpi")), alpha = 0.05))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 137, 0.44%
+# LFC < 0 (down)     : 10, 0.032%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+
+# BAL Treated d4 vs baseline
+# summary(results(ddsBALP20097, contrast = list(c("Timepoint_4dpi_vs_minus5dpi")), alpha = 0.05))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 85, 0.27%
+# LFC < 0 (down)     : 13, 0.041%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 10260, 33%
+# (mean count < 1)
+
+# BAL Untreated d4 vs baseline
+# summary(results(ddsBALP20097, contrast = list(c("Timepoint_4dpi_vs_minus5dpi","Treateduntreated.Timepoint4dpi")), alpha = 0.05))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 197, 0.63%
+# LFC < 0 (down)     : 46, 0.15%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 15089, 48%
+# (mean count < 3)
+
+# BAL Treated d4 interaction
+# summary(results(ddsBALP20097, name="Treateduntreated.Timepoint4dpi", alpha = 0.05))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.05
+# LFC > 0 (up)       : 1, 0.0032%
+# LFC < 0 (down)     : 1, 0.0032%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 0, 0%
+# (mean count < 0)
+
+# BAL Untreated vs Treated
+# summary(results(ddsBALP20097, contrast = list(c("Treated_untreated_vs_treated"))))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 6, 0.019%
+# LFC < 0 (down)     : 5, 0.016%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 7846, 25%
+# (mean count < 0)
+# 
+# > summary(results(ddsBALP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint2dpi"))))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 5, 0.016%
+# LFC < 0 (down)     : 17, 0.054%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 4829, 15%
+# (mean count < 0)
+# 
+# > summary(results(ddsBALP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint4dpi"))))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 19, 0.061%
+# LFC < 0 (down)     : 3, 0.0096%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 3622, 12%
+# (mean count < 0)
+# 
+# > summary(results(ddsBALP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.Timepoint7dpi"))))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 24, 0.077%
+# LFC < 0 (down)     : 20, 0.064%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 9657, 31%
+# (mean count < 1)
+# 
+# > summary(results(ddsBALP20097, contrast = list(c("Treated_untreated_vs_treated","Treateduntreated.TimepointNecropsy"))))
+# out of 31346 with nonzero total read count
+# adjusted p-value < 0.1
+# LFC > 0 (up)       : 456, 1.5%
+# LFC < 0 (down)     : 123, 0.39%
+# outliers [1]       : 0, 0%
+# low counts [2]     : 15089, 48%
+# (mean count < 3)
+
+
+```
+
+## Misc plots
+
+```{r p20097_Results, dependson="p20097_DESeqPreprocess", cache=TRUE, echo=TRUE, results='asis', warning=FALSE}
+ace2BALLinePlot <- linePlotsGKT(ddsBALP20097,"ENSMMUG00000014048","SubjectID","Timepoint","Treated","ACE2 in Bulk BAL") + scale_y_log10()
+ggsave(ace2BALLinePlot,filename = "ACE2_BAL_LinePlot.pdf", units = "in", width = 5, height = 4, scal = 1)
+
+ace2PBMCLinePlot <- linePlotsGKT(ddsPBMCP20097,"ENSMMUG00000014048","SubjectID","Timepoint","Treated","ACE2 in Bulk PBMC") + scale_y_log10()
+ggsave(ace2PBMCLinePlot,filename = "ACE2_PBMC_LinePlot.pdf", units = "in", width = 5, height = 4, scal = 1)
+
+# JUN
+linePlotsGKT(ddsPBMCP20097,"ENSMMUG00000059326","SubjectID","Timepoint","Treated",paste0(as.character(select(filter(Mmul10Annot, gene_id == "ENSMMUG00000059326"), gene_symbol))," in Bulk PBMC")) + scale_y_log10()
+
+plot_symbol = "FGL1"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+plot_symbol = "FGL2"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+
+plot_symbol = "NRP1"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+plot_symbol = "IFNAR1"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+plot_symbol = "IFNAR2"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+plot_symbol = "MARCO"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+plot_symbol = "CHIT1"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+plot_symbol = "MRC1"
+lineplot <- linePlotsGKT(ddsPBMCPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk PBMC")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_PBMC_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+lineplot <- linePlotsGKT(ddsBALPathP20097,as.character(select(filter(Mmul10Annot, gene_symbol == plot_symbol), gene_id)),"SubjectID","Timepoint","infected",paste0(plot_symbol," in Bulk BAL")) + scale_y_log10()
+ggsave(lineplot,filename = paste0(plot_symbol,"_BAL_LinePlot.pdf"), units = "in", width = 5, height = 4, scal = 1)
+
+
+
+
+## GSEA stuff
+
+phenorderGSEArun <- function (gsearundir)
+{
+    phenorder <- unlist(str_split(dir(gsearundir, glob2rx("ranked_gene_list*.tsv")),"_"))[c(4,6)]
+    phenorder
+}
+
+resultsGSEArun <- function (gsearundir, runlabel = "")
+{
+    phenorder <- unlist(str_split(dir(gsearundir, glob2rx("ranked_gene_list*.tsv")),"_"))[c(4,6)]
+    runTables <- dir(gsearundir,glob2rx("gsea_report_for*.tsv"))
+    phenotypes <- unlist(lapply(str_split(runTables,"_"),"[",4))
+    grep(phenorder[1],runTables,value = TRUE)
+    compPath <- paste0(gsearundir,"/",grep(phenorder[1],runTables,value = TRUE))
+    refPath <- paste0(gsearundir,"/",grep(phenorder[2],runTables,value = TRUE))
+    compTable <- read_tsv(file = compPath, col_types = "c--dddddddc-")
+    refTable <- read_tsv(file = refPath, col_types = "c--dddddddc-")
+    resTable <- compTable %>% bind_rows(refTable) %>% rename(GENESET = NAME)
+    resTable$`NOM p-val` <- ifelse(resTable$`NOM p-val` == 0,0.001,resTable$`NOM p-val`)
+    resTable <- resTable %>% mutate(topPhenotype = phenorder[1], bottomPhenotype = phenorder[2], .before = 1)
+    if(length(runlabel)>0) resTable <- resTable %>% mutate(run = runlabel, .before = 1)
+    # if(length(runlabel)>0) compTable %>% bind_rows(refTable) %>% mutate(run = runlabel, topPhenotype = phenorder[1], bottomPhenotype = phenorder[2], .before = 1)
+    # else compTable %>% bind_rows(refTable) %>% mutate(topPhenotype = phenorder[1], bottomPhenotype = phenorder[2], .before = 1)
+    # compTable %>% bind_rows(refTable) %>% mutate()
+    # if(length(runid>0)) label = paste0(runid," ")
+    # label <- paste0("(",label,phenorder[1],"vs",phenorder[2],")")
+    # compTable %>% bind_rows(refTable) %>% rename_with( ~ paste0(.x,label), .cols = 3:9)
+#    compTable %>% bind_rows(refTable) %>% rename_with( ~ paste0(.x," (",phenorder[1],"vs",phenorder[2],")"), .cols = 3:9)
+    #%>% bind_rows(read_tsv(file = paste0(gseaPath,"CD4Drop2_EFMvsMONO_H.Gsea.1598643059317/gsea_report_for_MpONO_1598643059317.tsv"), col_types = "c--dddddddc-")) %>% rename_with( ~ paste0(.x," (EFMvsMONO)"), .cols = 3:9)
+}
+# resultsGSEArun <- function (gsearundir, runlabel = "")
+# {
+#     phenorder <- unlist(str_split(dir(gsearundir, glob2rx("ranked_gene_list*.tsv")),"_"))[c(4,6)]
+#     runTables <- dir(gsearundir,glob2rx("gsea_report_for*.tsv"))
+#     phenotypes <- unlist(lapply(str_split(runTables,"_"),"[",4))
+#     grep(phenorder[1],runTables,value = TRUE)
+#     compPath <- paste0(gsearundir,"/",grep(phenorder[1],runTables,value = TRUE))
+#     refPath <- paste0(gsearundir,"/",grep(phenorder[2],runTables,value = TRUE))
+#     compTable <- read_tsv(file = compPath, col_types = "c--dddddddc-")
+#     refTable <- read_tsv(file = refPath, col_types = "c--dddddddc-")
+#     resTable <- compTable %>% bind_rows(refTable) %>% rename(GENESET = NAME)
+#     resTable$`NOM p-val` <- ifelse(resTable$`NOM p-val` == 0,0.001,resTable$`NOM p-val`)
+#     if(length(runlabel)>0) resTable <- resTable %>% mutate(run = runlabel, .before = 1)
+#     resTable %>% mutate(topPhenotype = phenorder[1], bottomPhenotype = phenorder[2], .before = 1)
+#     # if(length(runlabel)>0) compTable %>% bind_rows(refTable) %>% mutate(run = runlabel, topPhenotype = phenorder[1], bottomPhenotype = phenorder[2], .before = 1)
+#     # else compTable %>% bind_rows(refTable) %>% mutate(topPhenotype = phenorder[1], bottomPhenotype = phenorder[2], .before = 1)
+#     # compTable %>% bind_rows(refTable) %>% mutate()
+#     # if(length(runid>0)) label = paste0(runid," ")
+#     # label <- paste0("(",label,phenorder[1],"vs",phenorder[2],")")
+#     # compTable %>% bind_rows(refTable) %>% rename_with( ~ paste0(.x,label), .cols = 3:9)
+# #    compTable %>% bind_rows(refTable) %>% rename_with( ~ paste0(.x," (",phenorder[1],"vs",phenorder[2],")"), .cols = 3:9)
+#     #%>% bind_rows(read_tsv(file = paste0(gseaPath,"CD4Drop2_EFMvsMONO_H.Gsea.1598643059317/gsea_report_for_MpONO_1598643059317.tsv"), col_types = "c--dddddddc-")) %>% rename_with( ~ paste0(.x," (EFMvsMONO)"), .cols = 3:9)
+# }
+
+setListGSEArun <- function (gsearundir)
+{
+  tsvs <- dir(gsearundir, glob2rx("*.tsv"))
+  tsvs <- tsvs[-grep("gene_set_sizes.tsv",tsvs)]
+  tsvs <- tsvs[-grep(glob2rx("gsea_report_for*.tsv"),tsvs)]
+  tsvs <- tsvs[-grep(glob2rx("ranked_gene_list*.tsv"),tsvs)]
+  tsvs <- tsvs[-grep("Symbol_to_probe_set_mapping_details.tsv",tsvs)]
+  tsvs
+}
+
+resultsGSEAset <- function (gsearundir, geneset)
+{
+  phenorder <- phenorderGSEArun(gsearundir)
+  if(file.exists(paste0(gsearundir,"/",geneset,".tsv"))) { read_tsv(paste0(gsearundir,"/",geneset,".tsv"), col_types = "-cciddf-") %>% rename_with(~ paste0(.x," (",phenorder[1],"vs",phenorder[2],")"), .cols = 3:6)
+  }
+}
+
+gseaDir <- "GSEA/"
+gseaPath <- paste0(pathRoot,analysisPath,"/",gseaDir)
+shortruns <- dir(gseaPath,pattern = "BariShort")
+# [1] "BAL_D2vsBaseline_BariShort.Gsea.1600701667702" 
+# [2] "BAL_D4vsBaseline_BariShort.Gsea.1600701641534" 
+# [3] "PBMC_D1vsBaseline_BariShort.Gsea.1600701940759"
+# [4] "PBMC_D2vsBaseline_BariShort.Gsea.1600701910219"
+# [5] "PBMC_D4vsBaseline_BariShort.Gsea.1600702078600"
+resBALGSEAShortD2vsBaseline <- resultsGSEArun(paste0(gseaPath,shortruns[1]),"BAL")
+resBALGSEAShortD4vsBaseline <- resultsGSEArun(paste0(gseaPath,shortruns[2]),"BAL")
+resBALGSEAShort <- bind_rows(resBALGSEAShortD2vsBaseline, resBALGSEAShortD4vsBaseline)
+# resBALGSEAShort %>% ggplot(aes(x=topPhenotype, y=NAME, color=NES, size=(log(1-`NOM p-val`)))) + geom_point() + scale_color_gradient2(high = "red",low = "blue", limits = c(-2.5,2.5))
+resBALGSEAShort %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradient2(high = "red",low = "blue", limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme(axis.text.y = element_text(angle = 0, vjust = 0.5, hjust=1, size = 6)) + scale_radius("1-log(NOM p-val)", range = c(1,10), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001"))
+
+resPBMCGSEAShortD1vsBaseline <- resultsGSEArun(paste0(gseaPath,shortruns[3]),"PBMC")
+resPBMCGSEAShortD2vsBaseline <- resultsGSEArun(paste0(gseaPath,shortruns[4]),"PBMC")
+resPBMCGSEAShortD4vsBaseline <- resultsGSEArun(paste0(gseaPath,shortruns[5]),"PBMC")
+resPBMCGSEAShort <- bind_rows(resPBMCGSEAShortD1vsBaseline, resPBMCGSEAShortD2vsBaseline, resPBMCGSEAShortD4vsBaseline)
+resPBMCGSEAShort %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradient2(high = "red",low = "blue", limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme(axis.text.y = element_text(angle = 0, vjust = 0.5, hjust=1, size = 6)) + scale_radius("1-log(NOM p-val)", range = c(1,10), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001"))
+
+resGSEAShort <- bind_rows(resBALGSEAShort,resPBMCGSEAShort)
+
+shortList <- unique(resGSEAShort$GENESET)
+shortList[12] <- "ISG_SET"
+# resGSEAShort %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradient2(high = "red",low = "blue", limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme(axis.text.y = element_text(angle = 0, vjust = 0.5, hjust=1, size = 6)) + scale_radius("1-log(NOM p-val)", range = c(1,10), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run))
+
+resGSEAShortplot <- resGSEAShort %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","white","white","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 0, vjust = 0.5, hjust=1, size = 6)) + scale_radius("1-log(NOM p-val)", range = c(1,10), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run))
+resGSEAShortplot
+ggsave(resGSEAShortplot, filename = "resGSEA_BariShort.pdf", units = "in", width = 8, height = 5, scale = 1)
+
+
+
+
+```
+
+
+
+```{r}
+
+
+studyrunsGSEA <- lst(dir = gseaPath, runs = dir(dir,pattern = "Study"))
+studyrunsGSEA$runTable <- as.data.frame(do.call(rbind,str_split(studyrunsGSEA$runs,"_|[.]"))) %>% rename(c("Source" = 1,"Contrast" = 2,"Collection" = 3,"Gsea" = 4,"Timestamp" = 5)) %>% mutate(RunDir = studyrunsGSEA$runs)
+studyrunsGSEA$results <- bind_rows(lapply(studyrunsGSEA$runs,function(x) resultsGSEArun(paste0(studyrunsGSEA$dir,x),unlist(str_split(x,"_|[.]"))[1]) %>%
+                                            mutate(phenlab = str_sub(topPhenotype,end = 1))))
+studyrunsGSEA$sigGSEA <- unique(studyrunsGSEA$results %>% filter(abs(NES) > 1.5 & `NOM p-val` < 0.01) %>% select(GENESET))
+studyrunsGSEA$needExamination <- 
+
+studyruns <- dir(gseaPath,pattern = "Study")
+# [1] "BAL_D2vsBaseline_Study.Gsea.1600701724051"  "BAL_D4vsBaseline_Study.Gsea.1600701597325" 
+# [3] "PBMC_D1vsBaseline_Study.Gsea.1600701993122" "PBMC_D2vsBaseline_Study.Gsea.1600701872176"
+# [5] "PBMC_D4vsBaseline_Study.Gsea.1600702020597"
+resGSEABALD2vsBaseline <- resultsGSEArun(paste0(gseaPath,studyruns[1]),"BAL")
+resGSEABALD4vsBaseline <- resultsGSEArun(paste0(gseaPath,studyruns[2]),"BAL")
+resGSEABAL <- bind_rows(resGSEABALD2vsBaseline, resGSEABALD4vsBaseline)
+# resGSEABAL <- resGSEABALD2vsBaseline %>% select("NAME","SIZE","NES (2dpivsminus5dpi)","NOM p-val (2dpivsminus5dpi)") %>% left_join(select(resGSEABALD4vsBaseline, "NAME","SIZE","NES (4dpivsminus5dpi)","NOM p-val (4dpivsminus5dpi)"))
+resGSEAPBMCD1vsBaseline <- resultsGSEArun(paste0(gseaPath,studyruns[3]),"PBMC")
+resGSEAPBMCD2vsBaseline <- resultsGSEArun(paste0(gseaPath,studyruns[4]),"PBMC")
+resGSEAPBMCD4vsBaseline <- resultsGSEArun(paste0(gseaPath,studyruns[5]),"PBMC")
+resGSEAPBMC <- bind_rows(resGSEAPBMCD1vsBaseline, resGSEAPBMCD2vsBaseline, resGSEAPBMCD4vsBaseline)
+# resGSEAPBMC <- select(resGSEAPBMCD1vsBaseline, "NAME","SIZE","NES (1dpivsminus5dpi)", "NOM p-val (1dpivsminus5dpi)") %>% left_join(select(resGSEAPBMCD2vsBaseline, "NAME","SIZE","NES (2dpivsminus5dpi)","NOM p-val (2dpivsminus5dpi)")) %>% left_join(select(resGSEAPBMCD4vsBaseline,"NAME","SIZE","NES (4dpivsminus5dpi)","NOM p-val (4dpivsminus5dpi)"))
+#resGSEA <- full_join(resGSEABAL,resGSEAPBMC)
+resGSEA <- bind_rows(resGSEABAL, resGSEAPBMC)
+
+resGSEAdistplot <- ggplot(resGSEA, aes(x = topPhenotype, y=NES, color =1-log(`NOM p-val`))) + geom_violin(alpha = 0.1) + geom_sina(size = 0.5) + facet_grid(cols = vars(run)) + labs(title = "GSEA result distribution")
+resGSEAdistplot
+ggsave(resGSEAdistplot, filename = "resGSEA_distribution.pdf", units = "in", width = 8, height = 5, scale = 1)
+
+
+resGSEAvolcano <- ggplot(resGSEA, aes(x = NES, y=1-log(`NOM p-val`), color =1-log(`NOM p-val`))) + geom_point(size = 0.5) + facet_grid(cols = vars(run,topPhenotype)) + labs(title = "GSEA volcano")
+resGSEAvolcano
+ggsave(resGSEAvolcano, filename = "resGSEA_volcano.pdf", units = "in", width = 8, height = 5, scale = 1)
+
+topsets <- unique(resGSEA %>% filter(abs(NES) > 2.0 & `NOM p-val` < 0.002 & !(GENESET %in% shortList)) %>% select(GENESET))
+
+sigGSEA1 <- unique(resGSEA %>% filter(abs(NES) > 1.5 & `NOM p-val` < 0.01 & !(GENESET %in% shortList)) %>% select(GENESET))
+
+resGSEATopplot <- resGSEA %>% filter(GENESET %in% topsets$GENESET) %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","white","white","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 4, face = "bold")) + scale_radius("1-log(NOM p-val)", range = c(1,5), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run))
+resGSEATopplot
+ggsave(resGSEATopplot, filename = "resGSEA_Top.pdf", units = "in", width = 8, height = 5, scale = 1)
+
+resGSEA_shareTable <- pivot_wider(resGSEA %>% filter(GENESET %in% sigGSEA1$GENESET) %>% select(c(topPhenotype,run,GENESET,SIZE,NES,`NOM p-val`)), names_from = c(run,topPhenotype), values_from = c(NES,`NOM p-val`), names_glue = "{.value} ({run}:{topPhenotype})") %>% relocate(c(1,2,3,8,4,9,5,10,6,11,7,12))
+# relocate(resGSEA_shareTable,c(1,2,3,8,4,9,5,10,6,11,7,12)))
+
+resGSEA_shareTable <- pivot_wider(resGSEA %>% filter(GENESET %in% sigGSEA1$GENESET) %>% select(c(topPhenotype,run,GENESET,SIZE,NES,`NOM p-val`)), names_from = c(topPhenotype), values_from = c(NES,`NOM p-val`), names_glue = "{.value} ({topPhenotype}") %>% pivot_wider(names_from = run, values_from = starts_with(c("SIZE","NES","NOM")), names_glue = "{.value}:{run})") %>% select_if(function(x){!all(is.na(x))}) %>% relocate(c(1,2,4,9,6,11,3,8,13,5,10,7,12))
+write_excel_csv(resGSEA_shareTable, path = "resGSEA_NESgt1-5_NOMpvallt0-01.csv")
+
+studyrunsGSEA_shareTable <- pivot_wider(studyrunsGSEA$results %>% filter(GENESET %in% studyrunsGSEA$sigGSEA$GENESET) %>% select(c(topPhenotype,run,GENESET,SIZE,NES,`NOM p-val`)), names_from = c(topPhenotype), values_from = c(NES,`NOM p-val`), names_glue = "{.value} ({topPhenotype}") %>% pivot_wider(names_from = run, values_from = starts_with(c("SIZE","NES","NOM")), names_glue = "{.value}:{run})") %>% select_if(function(x){!all(is.na(x))}) %>% relocate(c(1,2,4,15,6,17,8,19,10,21,3,12,23,5,16,7,18,13,24,9,20,14,25,11,22))
+write_excel_csv(studyrunsGSEA_shareTable, path = "studyrunsGSEA_results.csv")
+
+newReviewList = studyrunsGSEA$sigGSEA %>% filter(!(GENESET %in% unique(sigGSEA1$GENESET)) & !(GENESET %in% shortList)) %>% select(GENESET)
+studyrunsGSEA_newReview <- pivot_wider(studyrunsGSEA$results %>% filter(GENESET %in% newReviewList$GENESET) %>% select(c(topPhenotype,run,GENESET,SIZE,NES,`NOM p-val`)), names_from = c(topPhenotype), values_from = c(NES,`NOM p-val`), names_glue = "{.value} ({topPhenotype}") %>% pivot_wider(names_from = run, values_from = starts_with(c("SIZE","NES","NOM")), names_glue = "{.value}:{run})") %>% select_if(function(x){!all(is.na(x))}) %>% relocate(c(1,2,4,15,6,17,8,19,10,21,3,12,23,5,16,7,18,13,24,9,20,14,25,11,22))
+write_excel_csv(studyrunsGSEA_newReview, path = "newReviewGSEA_results.csv")
+
+## get Steve's categorized table
+sbReview <- read_excel("resGSEA_top225_SB_cat.xlsx")
+
+
+
+
+## Genesets from Maria, Elise and Tim
+
+GSEA_MET <- read_csv("MPi_TNH_EV_GenesetsOfInterest.csv", col_names = TRUE)
+
+resGSEA %>% filter(GENESET %in% unlist(c(GSEA_MET[,"Maria"]))) %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","grey75","grey75","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 4, face = "bold")) + scale_radius("1-log(NOM p-val)", range = c(1,(12-0.3*length(unlist(c(na.omit(GSEA_MET[,"Maria"])))))), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run))
+
+saveGSEADotPlot <- function(object, name)
+{
+  gseaDotPlot <- object %>% filter(GENESET %in% unlist(c(GSEA_MET[,name]))) %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","grey75","grey75","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 7, face = "bold"), axis.text.x = element_text(angle = 30)) + scale_radius("1-log(NOM p-val)", range = c(1,(12-0.3*length(unlist(c(na.omit(GSEA_MET[,name])))))), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run)) + ggtitle(paste(name," Genesets of Interest"))
+  ggsave(gseaDotPlot, filename = paste0("resGSEA_",name,".pdf"), units = "in", width = 11, height = 8, scale = 1)
+}
+
+# saveGSEADotPlot(resGSEA,"Maria")
+# saveGSEADotPlot(resGSEA,"Elise")
+# saveGSEADotPlot(resGSEA,"Tim")
+
+saveGSEADotPlot(studyrunsGSEA$results,"Maria")
+saveGSEADotPlot(studyrunsGSEA$results,"Elise")
+saveGSEADotPlot(studyrunsGSEA$results,"Tim")
+
+
+mmruns <- dir(gseaPath, pattern = "MM")
+resMMGSEABALD2vsBaseline <- resultsGSEArun(paste0(gseaPath,mmruns[1]),"BAL")
+resMMGSEABALD4vsBaseline <- resultsGSEArun(paste0(gseaPath,mmruns[2]),"BAL")
+resMMGSEABAL <- bind_rows(resMMGSEABALD2vsBaseline, resMMGSEABALD4vsBaseline)
+
+MMrunsGSEA <- lst(dir = gseaPath, runs = dir(dir,pattern = "MM"))
+MMrunsGSEA$runTable <- as.data.frame(do.call(rbind,str_split(MMrunsGSEA$runs,"_|[.]"))) %>% rename(c("Source" = 1,"Contrast" = 2,"Collection" = 3,"Gsea" = 4,"Timestamp" = 5)) %>% mutate(RunDir = MMrunsGSEA$runs)
+MMrunsGSEA$results <- bind_rows(lapply(MMrunsGSEA$runs,function(x) resultsGSEArun(paste0(MMrunsGSEA$dir,x),unlist(str_split(x,"_|[.]"))[1])))
+MMrunsGSEA$sigGSEA <- unique(MMrunsGSEA$results %>% filter(abs(NES) > 1.5 & `NOM p-val` < 0.01) %>% select(GENESET))
+
+saveGSEADotPlotK <- function(object, name)
+{
+  gseaDotPlot <- object %>% filter(GENESET %in% unlist(c(GSEA_MET[,name]))) %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","grey75","red"), limits = c(-3.4,3.4), breaks = c(-3,-2,-1,0,1,2,3)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 8, face = "bold"), axis.text.x = element_text(angle = 30)) + scale_radius("1-log(NOM p-val)", range = c(1,(12-0.3*length(unlist(c(na.omit(GSEA_MET[,name])))))), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run)) + ggtitle(paste(name," Genesets of Interest"))
+  ggsave(gseaDotPlot, filename = paste0("resGSEA_",name,".pdf"), units = "in", width = 9, height = 6, scale = 1)
+}
+MMrunsGSEA$results$GENESET <- factor(MMrunsGSEA$results$GENESET, c("NC_MONO_SET","C_MONO_SET","IM_SET","AM_SET"))
+saveGSEADotPlotK(MMrunsGSEA$results, "Kyndal")
+
+```
+
+
+```{r GSEA_figures}
+
+gseaSteve <- read_xlsx("resGSEA_top225_SB_cat.xlsx",range = "A4:D228", col_names = c("GENESET","Interesting","Category","Plot"))
+gseaSteve$Category <- factor(gseaSteve$Category, levels = unique(gseaSteve$Category))
+gseaSteveLists <- sapply(levels(gseaSteve$Category), function(lvl) {gseaSteve %>% filter(Category == lvl & Plot == "y") %>% select(GENESET)})
+saveGSEADotPlotFigs <- function(object, setlist, name)
+{
+  gseaDotPlot <- object %>% filter(GENESET %in% unlist(setlist[name])) %>% ggplot(aes(x=topPhenotype, y=GENESET, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","grey75","grey75","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 7, face = "bold"), axis.text.x = element_text(angle = 30)) + scale_radius("1-log(NOM p-val)", range = c(1,(12-0.3*length(unlist(c(na.omit(setlist[name])))))), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run)) + ggtitle(paste(name," Genesets of Interest"))
+  ggsave(gseaDotPlot, filename = paste0("resGSEA_",name,".pdf"), units = "in", width = 11, height = 8, scale = 1)
+}
+
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "immune.GENESET")
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "innate.GENESET")
+#saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "ecm.GENESET")
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "synd.GENESET")
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "IR.GENESET")
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "epi.GENESET")
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "traff.GENESET")
+saveGSEADotPlotFigs(studyrunsGSEA$results, gseaSteveLists, "plat_thromb.GENESET")
+
+
+gseaFigs <- read_xlsx("resGSEA_top225_SB_cat-gktfigs.xlsx", range = "A4:E228", col_names = c("GENESET","Intersting","Category","Plot","Label"))
+gseaFigs <- add_row(gseaFigs,GENESET = "HALLMARK_IL6_JAK_STAT3_SIGNALING", Intersting = "y", Category = "immune", Plot = "y", Label = "IL6_JAK_STAT3\nSIGNALING")
+gseaFigs <- add_row(gseaFigs,GENESET = "REACTOME_NEUTROPHIL_DEGRANULATION", Intersting = "y", Category = "immune", Plot = "y", Label = "NEUTROPHIL\nDEGRANULATION")
+gseaFigs$Category <- factor(gseaFigs$Category, levels = unique(gseaFigs$Category))
+gseaFigsLists <- sapply(levels(gseaFigs$Category), function(lvl) {gseaFigs %>% filter(Category == lvl & Plot == "y") %>% select(GENESET)})
+gseaFigsLists$immune.GENESET <- append(gseaFigsLists$immune.GENESET,c("HALLMARK_IL6_JAK_STAT3_SIGNALING","REACTOME_NEUTROPHIL_DEGRANULATION"))
+#immune 23
+#tcell 12
+#innate 34
+#IR 19
+#synd 30
+#eip 13
+#traff 17
+#plat_thromb 13
+dotPlotSizes <- c("immune.GENESET" = 2.9, "tcell.GENESET" = 2.2, "innate.GENESET" = 3.6, "IR.GENESET" = 2.55, "synd.GENESET" = 3.1, "epi.GENESET" = 2.25, "traff.GENESET" = 2.45, "plat_thromb.GENESET" = 1.8)
+
+genGSEADotPlotFigs2 <- function(object, setlist, name) 
+{
+  gseaPlotDat <- object %>% filter(GENESET %in% unlist(setlist[name])) %>% left_join(select(gseaFigs,c(GENESET,Label)))
+#  gseaDotPlot <- ggplot(gseaPlotDat, aes(x=topPhenotype, y=str_replace_all(Label,"_","\n"),
+  gseaDotPlot <- ggplot(gseaPlotDat, aes(x=topPhenotype, y=Label, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","grey75","grey75","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 6, face = "bold"), axis.text.x = element_text(angle = 30, size = 6), legend.position = "none", axis.title.x = element_blank(), axis.title.y = element_blank(), strip.text = element_text(margin = margin(1,0,1,0))) + scale_radius("1-log(NOM p-val)", range = c(0.1,3), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run)) + ggtitle(str_replace(name,".GENESET",""))
+}
+
+genGSEADotPlotFigs2a <- function(object, setlist, name) 
+{
+  gseaPlotDat <- object %>%
+    filter(GENESET %in% unlist(setlist[name])) %>%
+    left_join(select(gseaFigs,c(GENESET,Label)))
+#  gseaDotPlot <- ggplot(gseaPlotDat, aes(x=topPhenotype, y=str_replace_all(Label,"_","\n"),
+  gseaDotPlot <- ggplot(gseaPlotDat,
+                        aes(x=phenlab,
+                            y=Label,
+                            color=NES,
+                            size=1-log(`NOM p-val`))) +
+  geom_point(na.rm = TRUE) +
+  scale_color_gradientn(colors = c("blue","grey75","grey75","red"),
+                          limits = c(-2.8,2.8),
+                          breaks = c(-2,-1,0,1,2)) +
+  theme_bw() +
+  theme(axis.text.y = element_text(angle = 15, vjust = 0.5, hjust=1, size = 6, face = "bold"),
+          axis.text.x = element_text(angle = 0, size = 6),
+          legend.position = "none",
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          strip.text = element_text(margin = margin(1,0,1,0))) +
+  scale_radius("1-log(NOM p-val)",
+                 range = c(0.1,3),
+                 breaks =  c(2,4,6,8),
+                 limits = c(1,8.2),
+                 labels = c("0.37","0.05","0.007","<0.001")) +
+  facet_grid(cols = vars(run), scales = "free_x", space = 'free') +
+  ggtitle(str_replace(name,".GENESET",""))
+}
+
+
+saveGSEADotPlotFigs2fromPlot <- function(plot, name)
+{
+  ggsave(plot, filename = paste0("resGSEAFig_",name,".pdf"), units = "in", width = 3, height = dotPlotSizes[name], scale = 1)
+}
+
+saveGSEADotPlotFigs2 <- function(object, setlist, name)
+{
+#  gseaPlotDat <- object %>% filter(GENESET %in% unlist(setlist[name])) %>% left_join(select(gseaFigs,c(GENESET,Label)))
+##  gseaDotPlot <- ggplot(gseaPlotDat, aes(x=topPhenotype, y=str_replace_all(Label,"_","\n"),
+#  gseaDotPlot <- ggplot(gseaPlotDat, aes(x=topPhenotype, y=Label, color=NES, size=1-log(`NOM p-val`))) + geom_point(na.rm = TRUE) + scale_color_gradientn(colors = c("blue","grey75","grey75","red"), limits = c(-2.8,2.8), breaks = c(-2,-1,0,1,2)) + theme_bw() + theme(axis.text.y = element_text(angle = 30, vjust = 0.5, hjust=1, size = 6, face = "bold"), axis.text.x = element_text(angle = 30, size = 6), legend.position = "none", axis.title.x = element_blank(), axis.title.y = element_blank(), strip.text = element_text(margin = margin(1,0,1,0))) + scale_radius("1-log(NOM p-val)", range = c(0.1,3), breaks =  c(2,4,6,8), limits = c(1,8.2), labels = c("0.37","0.05","0.007","<0.001")) + facet_grid(cols = vars(run)) + ggtitle(str_replace(name,".GENESET",""))
+  gseaDotPlot <- genGSEADotPlotFigs2(object, setlist, name)
+#  ggsave(gseaDotPlot, filename = paste0("resGSEAFig_",name,".pdf"), units = "in", width = 3, height = dotPlotSizes[name], scale = 1)
+  saveGSEADotPlotFigs2fromPlot(gseaDotPlot, name)
+}
+
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "immune.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "tcell.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "innate.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "IR.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "synd.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "epi.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "traff.GENESET")
+saveGSEADotPlotFigs2(studyrunsGSEA$results, gseaFigsLists, "plat_thromb.GENESET")
+
+dotPlotimmune <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "immune.GENESET")
+dotPlottcell <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "tcell.GENESET")
+dotPlotinnate <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "innate.GENESET")
+dotPlotIR <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "IR.GENESET")
+dotPlotsynd <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "synd.GENESET")
+dotPlotepi <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "epi.GENESET")
+dotPlottraff <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "traff.GENESET")
+dotPlotplatthromb <- genGSEADotPlotFigs2a(studyrunsGSEA$results, gseaFigsLists, "plat_thromb.GENESET")
+
+(volPanV2 <- ggarrange(
+  fig2volBALPathD2vsPre
+  , fig2volBALPathD4vsPre
+  , fig2volPBMCPathD2vsPre
+  , fig2volPBMCPathD4vsPre
+  , ncol = 4
+  , nrow = 1
+  , widths = c(2,2,2,2)
+  )
+)
+
+(dotCol1V2 <- ggarrange(
+  dotPlotimmune
+  , dotPlottcell
+  , ncol = 1
+  , nrow = 2
+  , heights = dotPlotSizes[c("immune.GENESET","tcell.GENESET")]
+  )
+)
+
+(dotCol2V2 <- ggarrange(
+  dotPlotinnate
+  , dotPlotplatthromb
+  , ncol = 1
+  , nrow = 2
+  , heights = dotPlotSizes[c("innate.GENESET","plat_thromb.GENESET")]
+))
+
+(dotCol3V2 <- ggarrange(
+  dotPlotIR
+  , dotPlottraff
+  , ncol = 1
+  , nrow = 2
+  , heights = dotPlotSizes[c("IR.GENESET","traff.GENESET")]
+))
+
+(dotPanV2 <- ggarrange(
+  dotCol1V2
+  , dotCol2V2
+  , dotCol3V2
+  , ncol = 3
+  , nrow = 1
+)
+)
+
+(upFig2V2 <- ggarrange(
+  volPanV2
+  , dotPanV2
+  , NULL
+  , ncol = 1
+  , nrow = 3
+  , heights = c(2,4.5,4)
+  , labels = c("A","B","C")
+  )
+)
+ggsave(upFig2V2, filename = "upperFig2V2.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+
+
+(dotCol1 <- ggarrange(dotPlotimmune
+            , dotPlottcell
+            , dotPlotsynd
+            , dotPlottraff
+            , heights = dotPlotSizes[c("immune.GENESET","tcell.GENESET","synd.GENESET","traff.GENESET")]
+            , nrow = 4
+            , ncol = 1)
+)
+(dotCol2 <- ggarrange(dotPlotinnate
+              , dotPlotIR
+              , dotPlotepi
+              , dotPlotplatthromb
+              , heights = dotPlotSizes[c("innate.GENESET","IR.GENESET","epi.GENESET","plat_thromb.GENESET")]
+              , nrow = 4
+              , ncol = 1)
+)
+(dotPan <-   ggarrange(
+  dotCol1
+  , dotCol2
+  , ncol = 2
+  , nrow = 1
+  )
+)
+(volPan <- ggarrange(
+  fig2volBALPathD4vsPre
+  , fig2volPBMCPathD4vsPre
+  , fig2volBALPathNecvsPre
+  , fig2volPBMCPathNecvsPre
+  , ncol = 1
+  , nrow = 4
+  , heights = c(3,3,3,3)
+  )
+)
+(upFig2 <- ggarrange(
+  volPan
+  , dotPan
+  , ncol = 2
+  , nrow = 1
+  , widths = c(2.5,5.5)
+  , labels = c("A","B")
+  )
+)
+ggsave(upFig2, filename = "upperFig2.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+
+
+(laydot <- ggarrange(
+  ggarrange(
+  ggarrange(dotPlotimmune
+            , dotPlottcell
+            , dotPlotsynd
+            , heights = dotPlotSizes[c("immune.GENESET","tcell.GENESET","synd.GENESET")]
+            , nrow = 3
+            , ncol = 1)
+  , ggarrange(dotPlotinnate
+              , dotPlotIR
+              , dotPlotepi
+              , heights = dotPlotSizes[c("innate.GENESET","IR.GENESET","epi.GENESET")]
+              , nrow = 3
+              , ncol = 1)
+  , ncol = 2
+  , nrow = 1
+  )
+  , ncol = 1
+  , nrow = 2
+  , heights = c(8, 3)
+))
+
+ggsave(laydot, filename = "dotLayout.pdf", units = "in", width = 6, height = 11, scale = 1)
+
+```
+
+
+
+
+
+```{r GSEA_heatmaps, include=FALSE}
+
+heatmap_MET <- read_tsv("Heatmap_list1.txt", col_names = c("Who","GENESET"))
+heatmap_GeneLists <- lapply(unique(heatmap_MET$GENESET), function(GENESET) {
+  genelist <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == "BAL" & Contrast == "D2vsBaseline") %>% select(RunDir) %>% unlist()),GENESET) %>% .$SYMBOL
+  # if > 50 genes, get the leading edge
+  if(length(genelist) > 50) {
+      genelist <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == "BAL" & Contrast == "D2vsBaseline") %>% select(RunDir) %>% unlist()),GENESET) %>% filter(`CORE ENRICHMENT (2dpivsminus5dpi)` == "Yes") %>% .$SYMBOL
+  }
+  genelist
+})
+names(heatmap_GeneLists) <- unique(heatmap_MET$GENESET)
+
+getGeneLists <- function(genesetList, source, contrast) {
+  genelists <- lapply(unique(genesetList), function(GENESET) {
+    genelist <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == source & Contrast == contrast) %>% select(RunDir) %>% unlist()),GENESET) %>% .$SYMBOL
+  if(length(genelist) > 50) {
+    genelist <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == source & Contrast == contrast) %>% select(RunDir) %>% unlist()),GENESET) %>% filter(`CORE ENRICHMENT (2dpivsminus5dpi)` == "Yes") %>% .$SYMBOL
+  }
+  genelist
+  })
+  names(genelists) <- genesetList
+  genelists
+}
+
+saveGSEAHeatmap <- function(plotset, source, contrast) {
+   pdf(paste0(plotset,"_Heatmap.pdf"), width = 9, height = 6)
+  genelists <- getGeneLists(plotset, source, contrast)
+  ht = Heatmap(rlogFromMedBaselineBALPathP20097[genelists[[plotset]],], col = heatscale1, column_title = plotset,name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = genelists[[plotset]], column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 5), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+#  heatmap_GeneLists[[plotset]]
+  draw(ht)
+  dev.off()
+ 
+}
+
+heatmapList1 <- c("REACTOME_FCGR3A_MEDIATED_IL10_SYNTHESIS")
+saveGSEAHeatmap(heatmapList1, source = "BAL", contrast = "D7vsBaseline")
+
+lapply(names(heatmap_GeneLists), function(plotset) {
+  pdf(paste0(plotset,"_Heatmap.pdf"), width = 9, height = 6)
+  ht = Heatmap(rlogFromMedBaselineBALPathP20097[heatmap_GeneLists[[plotset]],], col = heatscale1, column_title = plotset,name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = heatmap_GeneLists[[plotset]], column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 5), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+  draw(ht)
+  dev.off()
+})
+
+plotSet <- "HALLMARK_INTERFERON_GAMMA_RESPONSE"
+LEList <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == "BAL" & Contrast == "D2vsBaseline") %>% select(RunDir) %>% unlist()),plotSet) %>% filter(`CORE ENRICHMENT (2dpivsminus5dpi)` == "Yes") %>% .$SYMBOL
+
+heatscale1 <- colorRamp2(c(-2,0,2), c("blue","#EEEEEE","red"))
+Heatmap(rlogFromMedBaselineBALPathP20097[LEList,], col = heatscale1, column_title = plotSet,name = "log2 foldChange\nfrom median Baseline", column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = LEList, column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 4), column_names_gp = gpar(fontsize = 6), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+
+plotSet <- "REACTOME_PD_1_SIGNALING"
+FullList <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == "BAL" & Contrast == "D2vsBaseline") %>% select(RunDir) %>% unlist()),plotSet) %>% .$SYMBOL
+
+heatscale1 <- colorRamp2(c(-2,0,2), c("blue","#EEEEEE","red"))
+pdf(paste0(plotSet,"_Heatmap.pdf"), width = 9, height = 6)
+Heatmap(rlogFromMedBaselineBALPathP20097[FullList,], col = heatscale1, column_title = plotSet,name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = FullList, column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 5), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+dev.off()
+
+plotSet <- "REACTOME_INTERLEUKIN_10_SIGNALING"
+FullList <- resultsGSEAset(paste0(gseaPath,filter(studyrunsGSEA$runTable, Source == "BAL" & Contrast == "D4vsBaseline") %>% select(RunDir) %>% unlist()),plotSet) %>% .$SYMBOL
+
+heatscale1 <- colorRamp2(c(-2,0,2), c("blue","#EEEEEE","red"))
+pdf(paste0(plotSet,"_Heatmap.pdf"), width = 9, height = 6)
+R_IL10_SIG_ht <- Heatmap(rlogFromMedBaselineBALPathP20097[FullList,], col = heatscale1, column_title = plotSet,name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = FullList, column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 4), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+dev.off()
+
+isgList <- read_tsv("../../../Resources/ISGs_SandlerBosinger.txt", col_names = TRUE)
+isg_ht <- Heatmap(rlogFromMedBaselineBALPathP20097[intersect(isgList$ISGs,rownames(rlogFromMedBaselineBALPathP20097)),], col = heatscale1, column_title = "ISGs",name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = intersect(isgList$ISGs,rownames(rlogFromMedBaselineBALPathP20097)), column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 4), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+
+isg_plot <- grid.grabExpr(draw(isg_ht))
+ril10_plot <- grid.grabExpr(draw(R_IL10_SIG_ht))
+
+(laydotheat <- ggarrange(dotPanV2,
+                         isg_plot,
+                         ril10_plot,
+                         ncol = 1,
+                         nrow = 3,
+                         heights = c(4,2.25, 4)
+))
+
+ggsave(laydotheat, filename = "Fig2v3.0.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+ggsave(laydotheat, filename = "Fig2v3.0.svg", units = "in", width = 8.5, height = 11, scale = 1)
+
+isg_PBMC_ht <- Heatmap(rlogFromMedBaselinePBMCPathP20097[intersect(isgList$ISGs,rownames(rlogFromMedBaselinePBMCPathP20097)),], col = heatscale1, column_title = "PBMC ISGs",name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldPBMCPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = intersect(isgList$ISGs,rownames(rlogFromMedBaselinePBMCPathP20097)), column_order = order(rldPBMCPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 3), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","1 dpi","2 dpi","4 dpi","6 dpi","7 dpi","8 dpi","Necropsy"), labels_gp = gpar(fontsize = 10))), column_split = rldPBMCPathP20097forPlots$Timepoint)
+
+
+
+
+```
+
+
+```{r Kyndal_lung}
+
+BLss <- read.csv("/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/sblab01-kgoss2/bulk_lung/sampleSheet.csv")
+
+mmul10 <- "/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/sblab01-kgoss2/bulk_lung/geneid_genenames_biomart"
+Mmul10Annot <- read_tsv(mmul10, col_names = c("gene_id","gene_symbol"))
+Mmul10SymbolVector <- Mmul10Annot$gene_symbol
+names(Mmul10SymbolVector) <- Mmul10Annot$gene_id
+for_dosage <- BLss %>%
+                  filter(!(Tissue == "Peripheral" | treatment2 == "inf-drug"))
+for_dosage$dose2 <- paste(for_dosage$SARS2_dosage)
+for_dosage$dose2 <- str_replace(for_dosage$dose2, "high|low", "high_and_low")
+dds_dosage <- DESeqDataSetFromHTSeqCount(for_dosage, "/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/sblab01-kgoss2/bulk_lung/S2.7.3a_Mmul10_MT246667.1/AlaHtseq/", design = ~ SARS2_dosage)
+dds_dosage <- DESeq(dds_dosage)
+
+# uninfected vs high dose (peripheral and drug (high) removed)
+contrast1 <- c("SARS2_dosage", "none", "high")
+res_contrast1_unshrunken <- results(dds_dosage, contrast=contrast1, alpha = 0.05)
+res_contrast1_annot <- as.data.frame(res_contrast1_unshrunken ) %>% 
+  rownames_to_column("GeneID") %>% right_join(Mmul10Annot, by=c("GeneID" = "gene_id"))
+
+forVolcano <- lfcShrink(dds_dosage,
+                 contrast = contrast1, res=res_contrast1_unshrunken, type = 'normal')
+
+
+volcano <- EnhancedVolcano(forVolcano,
+                lab = NA,
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                title = "Uninfected vs Infected",
+                FCcutoff = 1,
+                pCutoff = 0.05)
+volcano
+
+keyvals <- ifelse(forVolcano$padj < 0.05,
+	ifelse(forVolcano$log2FoldChange > 1,
+					  '#d95f02',
+					  ifelse(forVolcano$log2FoldChange < -1,
+					  				    '#1b9e77',
+									    'grey')),
+	'grey')
+keyvals[is.na(keyvals)] <- 'grey'
+
+names(keyvals)[keyvals == '#d95f02'] <- "Up"
+names(keyvals)[keyvals == '#1b9e77'] <- "Down"
+names(keyvals)[keyvals == 'grey'] <- "NS"
+  
+
+(fig2LungVolcano <- EnhancedVolcano(forVolcano,
+		lab = Mmul10SymbolVector[rownames(forVolcano)],
+		x = 'log2FoldChange',
+		y = 'pvalue',
+		title = "Lung Uninfected vs Infected",
+		FCcutoff = 1,
+		pCutoff = alphaPvalue(forVolcano,0.05),
+		colCustom = keyvals
+		, selectLab = c("MARCO","CHIT1","CD163","FGL2","MRC1")
+#    , selectLab = volcanoDataFiltered$gene_symbol[
+#      c(
+#        1:31
+#        , length(volcanoDataFiltered$gene_symbol) - (20:0)
+#        )
+#      ]
+#    , xlim = c(-4,8)
+    , ylim = c(0,15)
+#    , ylim = ylim
+#    , axisLabSize = 7
+    , axisLabSize = evParam$axisLabSize
+#    , title = title
+#    , subtitle = str_remove(object@elementMetadata$description[2],".*: ")
+    , subtitle = NA
+#    , titleLabSize = 12
+    , titleLabSize = evParam$titleLabSize
+#    , subtitleLabSize = 8
+    , subtitleLabSize = evParam$subtitleLabSize
+    , caption = ""
+    , captionLabSize = 0
+    , legendPosition = 'none'
+#    , labSize = 3
+    , labSize = evParam$labSize
+    , labhjust = 0.5
+#    , pointSize = 0.5
+    , pointSize = evParam$pointSize
+#    , colCustom = keyvals
+    , labCol = "black"
+    ,  labFace = 'bold'
+    , cutoffLineWidth = evParam$cutoffLineWidth
+#    , hlineWidth = 0.05
+    , hlineWidth = evParam$hlineWidth
+#    , vlineWidth = 0.05
+    , vlineWidth = evParam$vlineWidth
+    , borderWidth = 0.1
+    , boxedLabels = FALSE
+    , drawConnectors = TRUE
+    , widthConnectors = 0.1
+    , lengthConnectors = unit(0.001, "npc")
+#    , colConnectors = "grey"
+    , colConnectors = evParam$colConnectors
+    ) 
+#    + annotate(
+#      "text"
+#      , label = paste0("Down=",downCount)
+#      , size = vParam$annotateSize
+#      , x = -1.5
+#     , y = 0
+#      , hjust = 0.5
+#      ) 
+#    + annotate(
+#     "text"
+#     , label = paste0("Up=",upCount)
+#     , size = vParam$annotateSize
+#     , x = 1.5
+#      , y = 0
+#      , hjust = 0.5
+#      ) 
+    + theme(
+      plot.title = element_text(hjust = 0.5, face = "plain", margin = margin(b = 0))
+#      , plot.subtitle = element_text(margin = margin(b = 0))
+      , plot.subtitle = element_blank()
+      , plot.caption = element_blank()
+      , plot.margin = margin(2,2,2,2)
+      , axis.ticks = element_line(size = 0.1)
+      , axis.ticks.length = unit(2, "pt")
+      , axis.title.x = element_text(margin = margin(0,0,0,0))
+      , axis.text.x = element_text(hjust = 0.5, margin = margin(1,0,0,0))
+      , axis.title.y = element_text(margin = margin(0,0,0,0))
+      , axis.text.y = element_text(vjust = 0.5, margin = margin(0,0,0,1))
+      , panel.grid = element_line(size = 0.1)
+      )
+)
+ggsave(fig2LungVolcano, filename = "FigLungVolNec.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2LungVolcano, filename = "FigLungVolNec.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2LungVolcano, filename = "FigLungVolNec.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+fig2volLungPathNec <- Mmul10EnhancedVolcano(
+  forVolcano
+  , fcThresh = vParam$fcThresh
+  , xlim = c(-3,3)
+  , ylim = c(0,15)
+  , title = "Lung Nec Uninfected vs Infected"
+  )
+ggsave(fig2volLungPathNec, filename = "Fig2CvolLung10DPI.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volLungPathNec, filename = "Fig2CvolLung10DPI.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(fig2volLungPathNec, filename = "Fig2CvolLung10DPI.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+
+
+
+chit1 <- plotCounts(dds_dosage, "ENSMMUG00000008709", intgroup = "SARS2_dosage", returnData = T)
+cd163 <- plotCounts(dds_dosage, "ENSMMUG00000005150", intgroup = "SARS2_dosage", returnData = T)
+fgl2 <- plotCounts(dds_dosage, "ENSMMUG00000055568", intgroup = "SARS2_dosage", returnData = T)
+marco <- plotCounts(dds_dosage, "ENSMMUG00000002610", intgroup = "SARS2_dosage", returnData = T)
+mrc1 <- plotCounts(dds_dosage, "ENSMMUG00000011620", intgroup = "SARS2_dosage", returnData = T)
+
+chit1_plot <- chit1 %>%
+  mutate(status = recode_factor(chit1$SARS2_dosage,  none = "Uninfected", high = "Infected", low = "Ignore", .ordered = TRUE)) %>% 
+  filter(status %in% c("Uninfected","Infected")) %>%
+  ggplot(aes(x = status, y = count)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  ggtitle("CHIT1") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5))
+#  filter(SARS2_dosage %in% c("none", "high")) %>%
+
+cd163_plot <- cd163 %>% 
+  mutate(status = recode_factor(chit1$SARS2_dosage,  none = "Uninfected", high = "Infected", low = "Ignore", .ordered = TRUE)) %>% 
+  filter(status %in% c("Uninfected","Infected")) %>%
+  ggplot(aes(x = status, y = count)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  ggtitle("CD163") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+marco_plot <- marco %>% 
+  mutate(status = recode_factor(chit1$SARS2_dosage,  none = "Uninfected", high = "Infected", low = "Ignore", .ordered = TRUE)) %>% 
+  filter(status %in% c("Uninfected","Infected")) %>%
+  ggplot(aes(x = status, y = count)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  ggtitle("MARCO") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+fgl2_plot <- fgl2 %>% 
+  mutate(status = recode_factor(chit1$SARS2_dosage,  none = "Uninfected", high = "Infected", low = "Ignore", .ordered = TRUE)) %>% 
+  filter(status %in% c("Uninfected","Infected")) %>%
+  ggplot(aes(x = status, y = count)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  ggtitle("FGL2") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+mrc1_plot <- mrc1 %>% 
+  mutate(status = recode_factor(chit1$SARS2_dosage,  none = "Uninfected", high = "Infected", low = "Ignore", .ordered = TRUE)) %>% 
+  filter(status %in% c("Uninfected","Infected")) %>%
+  ggplot(aes(x = status, y = count)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  ggtitle("MRC1") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+## GSEA
+library(cowplot)
+# source or load One.GSEA.Enrich.Plot
+aHM_INF_A_RESP <- One.GSEA.Enrich.Plot(dir1="/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/bulk_lung/bulkLung_shortlist_GSEA_analysis.Gsea.1610551996384/", geneset="HALLMARK_INTERFERON_ALPHA_RESPONSE", color1="blue", phen1="Higher in Uninfected", phen2="Higher in Infected", label1_y_pos = 0.2, filename = "GSEAEnrich.pdf", mainTitle = "IFNA") 
+
+aISG_SET <- One.GSEA.Enrich.Plot(dir1="/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/bulk_lung/bulkLung_shortlist_GSEA_analysis.Gsea.1610551996384/", geneset="ISG_SET", color1="blue", phen1="Higher in Uninfected", phen2="Higher in Infected", label1_y_pos = 0.2, filename = "GSEAEnrich.pdf", mainTitle = "ISGs") 
+
+aHM_TNFA_SIG_V_NFKB <- One.GSEA.Enrich.Plot(dir1="/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/bulk_lung/bulkLung_shortlist_GSEA_analysis.Gsea.1610551996384/", geneset="HALLMARK_TNFA_SIGNALING_VIA_NFKB", color1="blue", phen1="Higher in Uninfected", phen2="Higher in Infected", label1_y_pos = 0.2, filename = "GSEAEnrich.pdf", mainTitle = "TNFA") 
+
+aHM_IL6_JAK_STAT3_SIG <- One.GSEA.Enrich.Plot(dir1="/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/bulk_lung/bulkLung_shortlist_GSEA_analysis.Gsea.1610551996384/", geneset="HALLMARK_IL6_JAK_STAT3_SIGNALING", color1="blue", phen1="Higher in Uninfected", phen2="Higher in Infected", label1_y_pos = 0.2, filename = "GSEAEnrich.pdf", mainTitle = "IL6 JAK STAT3 SIGNALING") 
+
+aALVMAC <- One.GSEA.Enrich.Plot(dir1="/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/bulk_lung/AMvsIM_analysis.Gsea.1610744941279/", geneset="ALVMAC", color1="blue", phen1="Higher in Uninfected", phen2="Higher in Infected", label1_y_pos = 0.2, filename = "GSEAEnrich.pdf", mainTitle = "AM") 
+
+
+## Greg reran GSEA with labels infected vs uninfected and with the studyruns collection
+resGSEALungInfVsUninf <- resultsGSEArun("/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/Analysis_GKT/Bulk/Covid_NHP_Bulk_Analysis/GSEA/Lung_IngVsUninf_Study.Gsea.1619006134440/","Lung")
+resGSEALungInfVsUninf %>% arrange(NES) %>% write.xlsx(file = "resGSEA_Lung_InfVsUninf.xlsx", colNames = TRUE)
+
+
+(volPanNec <- ggarrange(
+  fig2volPBMCPathNecvsPre
+  , fig2volBALPathNecvsPre
+  , fig2volLungPathNec
+  , nrow = 3
+  , ncol = 1
+  , heights = c(2,2,2)
+  )
+)
+
+(gseaPanNec <- ggarrange(
+  aISG_SET
+  , aHM_INF_A_RESP
+  , aHM_TNFA_SIG_V_NFKB
+  , aHM_IL6_JAK_STAT3_SIG
+  , nrow = 4
+  , ncol = 1
+  , heights = c(2,2,2,2)
+  )
+)
+
+(boxPlotPanNec <- ggarrange(
+  chit1_plot
+  , cd163_plot
+  , marco_plot
+  , fgl2_plot
+  , mrc1_plot
+  , nrow = 5
+  , ncol = 1
+  , heights = c(2,2,2,2,2)
+))
+
+(col3FigNec <- ggarrange(
+  volPanNec
+  , gseaPanNec
+  , boxPlotPanNec
+  , ncol = 3
+  , nrow = 1
+  , widths = c(4,3,1.5)
+  , labels = c("A","B","C")
+  )
+)
+ggsave(col3FigNec, filename = "col3FigNec.pdf", units = "in", width = 8.5, height = 11, scale = 1)
+
+isg_PBMC_ht_plot <- grid.grabExpr(draw(isg_PBMC_ht))
+
+(supFig2v3 <- ggarrange(
+  volPanV2
+  , ggarrange(
+    fig2volPBMCPathNecvsPre
+    , fig2volBALPathNecvsPre
+    , fig2volLungPathNec
+    , nrow = 1
+    , ncol = 3
+    , heights = c(2,2,2)
+  )
+    , isg_PBMC_ht_plot
+    , nrow = 3
+    , ncol = 1
+    , heights = c(2,2,2)
+    , labels = c("A","B","C")
+  )
+)
+
+ggsave(supFig2v3, filename = "draft_SuppFig2v3.pdf", units = "in", width = 8, height = 10, scale = 1)
+ggsave(supFig2v3, filename = "draft_SuppFig2v3.png", units = "in", width = 8, height = 10, scale = 1)
+
+```
+
+```{r Kyndal_AM_IM}
+
+# reference
+Mmul10Annot <- read_tsv("/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/references/geneid_genenames_biomart", col_names = c("gene_id","gene_symbol"))
+Mmul10SymbolVector <- Mmul10Annot$gene_symbol
+names(Mmul10SymbolVector) <- Mmul10Annot$gene_id
+
+AMIMcounts <- read.table("/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/simon/mmul10/counts.txt", header=T, row.names = 1, check.names = F)[-1:-4,]
+AMIMcounts <- as.matrix(AMIMcounts)
+
+AMIMss <- read.csv("/yerkes-cifs/runs/Analysis/COVID_NHP_Study1/KG_BulkLung/vmadeti-kgoss2/data/simon/mmul10/Sample_sheet.txt", row.names = 1, sep = "\t")
+
+AMIMcounts <- AMIMcounts[, rownames(AMIMss)]
+all(rownames(AMIMss) == colnames(AMIMcounts))
+
+ddsAMIM <- DESeqDataSetFromMatrix(countData = AMIMcounts, colData = AMIMss, design = ~ Treatment_Tissue)
+
+ddsAMIM <- DESeq(ddsAMIM, parallel = TRUE)
+
+all(rownames(ddsAMIM) == Mmul10Annot$gene_id)
+Mmul10Annot <- Mmul10Annot[match(rownames(ddsAMIM), Mmul10Annot$gene_id),]
+all(rownames(ddsAMIM) == Mmul10Annot$gene_id)
+
+mcols(ddsAMIM) <- cbind(mcols(ddsAMIM), Mmul10Annot)
+ddsAMIM <- ddsAMIM[!(is.na(rowData(ddsAMIM)$gene_symbol)),]
+
+resAMIM <- results(ddsAMIM)
+resAMIM$gene_symbol <- rowData(ddsAMIM)$gene_symbol
+
+ddsnormalized_counts <- counts(ddsAMIM, normalized=TRUE)
+
+rldsimon <- rlog(ddsAMIM, blind = FALSE, fitType = "parametric")
+rldsimon <- rldsimon[!is.na(rowData(ddsAMIM)$gene_symbol),]
+rlogsimon <- assay(rldsimon)
+all(rownames(rlogsimon) == rownames(resAMIM))
+rownames(rlogsimon) <- resAMIM$gene_symbol
+
+all(rownames(ddsnormalized_counts) == rownames(resAMIM))
+rownames(ddsnormalized_counts) <- resAMIM$gene_symbol
+
+shortlist <- c("MARCO","FABP4","PPARG","CHIT1","MCEMP1","TECR","SHTN1","FGR","SEPTIN9","QSOX1","CXCL16","ERGIC1","ITPK1","UBB","ACAD10","DDRGK1","VAPA","LY86","MS4A7","CYP27A1","SHTN1","CD36","LTA4H","SPETIN11","PLA2G15","APP","ACP5","CLIC4","PDLIM1","RETN","MPC2","DBNDD2","PROS1","SVIL","GPR34","RAB13","MMP14","DST","ITGA6","RMDN3","COLEC12","GALNT12","PHLDA3","CCL18","SLCO2B1","CHI3L1","FHL1","ABCG1","APOBEC3A","FCGR2B","ZFP36L1","TIMP1","LIMD2","PLBD1","VSIR","AZU1","ISG20","IDO1","CDKN1A","ABI3","LSP1","LAT2","CORO1A","RASSF2","TNFRSF1B","IFNGR2","IL10RA","RGS2","IRF1B","FCGR2B","ZFP36L1","SOD2","RNASE6","GPR65","CD86","CLEC2B","LILRAB","PLEKHO1","CITED2","CD69")
+
+shortlist[24]
+shortlist[24] <- "SRY"
+shortlist[69]
+shortlist[69] <- "IRF1"
+
+AMIMkeyvals <- ifelse(resAMIM$padj < 0.05,
+	ifelse(resAMIM$log2FoldChange > 1,
+					  '#d95f02',
+					  ifelse(resAMIM$log2FoldChange < -1,
+					  				    '#1b9e77',
+									    'grey')),
+	'grey')
+AMIMkeyvals[is.na(AMIMkeyvals)] <- 'grey'
+
+names(AMIMkeyvals)[AMIMkeyvals == '#d95f02'] <- "Up"
+names(AMIMkeyvals)[AMIMkeyvals == '#1b9e77'] <- "Down"
+names(AMIMkeyvals)[AMIMkeyvals == 'grey'] <- "NS"
+  
+
+(figAMIMVolcano <- EnhancedVolcano(resAMIM,
+		lab = Mmul10SymbolVector[rownames(resAMIM)],
+		x = 'log2FoldChange',
+		y = 'pvalue',
+		title = "IntMac vs AlvMac",
+		FCcutoff = 1,
+		pCutoff = alphaPvalue(resAMIM,0.05),
+		colCustom = AMIMkeyvals
+		, selectLab = shortlist
+#		, selectLab = c("MARCO","CHIT1","CD163","FGL2","MRC1")
+#    , selectLab = volcanoDataFiltered$gene_symbol[
+#      c(
+#        1:31
+#        , length(volcanoDataFiltered$gene_symbol) - (20:0)
+#        )
+#      ]
+#    , xlim = c(-4,8)
+#    , ylim = c(0,15)
+#    , ylim = ylim
+#    , axisLabSize = 7
+    , axisLabSize = evParam$axisLabSize
+#    , title = title
+#    , subtitle = str_remove(object@elementMetadata$description[2],".*: ")
+    , subtitle = NA
+#    , titleLabSize = 12
+    , titleLabSize = evParam$titleLabSize
+#    , subtitleLabSize = 8
+    , subtitleLabSize = evParam$subtitleLabSize
+    , caption = ""
+    , captionLabSize = 0
+    , legendPosition = 'none'
+#    , labSize = 3
+    , labSize = evParam$labSize
+    , labhjust = 0.5
+#    , pointSize = 0.5
+    , pointSize = evParam$pointSize
+#    , colCustom = keyvals
+    , labCol = "black"
+    ,  labFace = 'bold'
+    , cutoffLineWidth = evParam$cutoffLineWidth
+#    , hlineWidth = 0.05
+    , hlineWidth = evParam$hlineWidth
+#    , vlineWidth = 0.05
+    , vlineWidth = evParam$vlineWidth
+    , borderWidth = 0.1
+    , boxedLabels = FALSE
+    , drawConnectors = TRUE
+    , widthConnectors = 0.1
+    , lengthConnectors = unit(0.001, "npc")
+#    , colConnectors = "grey"
+    , colConnectors = evParam$colConnectors
+    ) 
+#    + annotate(
+#      "text"
+#      , label = paste0("Down=",downCount)
+#      , size = vParam$annotateSize
+#      , x = -1.5
+#     , y = 0
+#      , hjust = 0.5
+#      ) 
+#    + annotate(
+#     "text"
+#     , label = paste0("Up=",upCount)
+#     , size = vParam$annotateSize
+#     , x = 1.5
+#      , y = 0
+#      , hjust = 0.5
+#      ) 
+    + theme(
+      plot.title = element_text(hjust = 0.5, face = "plain", margin = margin(b = 0))
+#      , plot.subtitle = element_text(margin = margin(b = 0))
+      , plot.subtitle = element_blank()
+      , plot.caption = element_blank()
+      , plot.margin = margin(2,2,2,2)
+      , axis.ticks = element_line(size = 0.1)
+      , axis.ticks.length = unit(2, "pt")
+      , axis.title.x = element_text(margin = margin(0,0,0,0))
+      , axis.text.x = element_text(hjust = 0.5, margin = margin(1,0,0,0))
+      , axis.title.y = element_text(margin = margin(0,0,0,0))
+      , axis.text.y = element_text(vjust = 0.5, margin = margin(0,0,0,1))
+      , panel.grid = element_line(size = 0.1)
+      )
+)
+ggsave(figAMIMVolcano, filename = "FigAMIMVolnolimit.tiff", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(figAMIMVolcano, filename = "FigAMIMVolnolimit.png", units = "in", width = 2, height = 1.5, scale = 1)
+ggsave(figAMIMVolcano, filename = "FigAMIMVolnolimit.pdf", units = "in", width = 2, height = 1.5, scale = 1)
+
+
+
+
+# Heatmap(rlogFromMedBaselineBALPathP20097[FullList,], col = heatscale1, column_title = plotSet,name = "log2 foldChange\nfrom median Baseline", heatmap_legend_param = list(title_gp = gpar(fontsize = 6)), column_labels = rldBALPathP20097forPlots$SubjectID, column_names_rot = 0, column_names_centered = TRUE, row_order = FullList, column_order = order(rldBALPathP20097forPlots$Timepoint), row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 5), top_annotation = HeatmapAnnotation(foo = anno_block(labels = c("Baseline","2 dpi","4 dpi","7 dpi","Necropsy"))), column_split = rldBALPathP20097forPlots$Timepoint)
+
+pdf("Uninfected_AM-IM_Heatmap.pdf", width = 8, height = 10)
+Heatmap(rlogsimon[shortlist[-c(24)],ddsAMIM$Treatment_Tissue %in% c("Control_AlvMac","Control_IntMac")], column_names_rot = 0, column_names_centered = TRUE,row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 5))
+dev.off()
+```
+
+
+
+
+
+
+
