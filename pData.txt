@@ -1,0 +1,7 @@
+Type	ID	Study
+22_M139-15_IntMac	non-AM	M139-15	Study2
+23_M139-15_AlvMac	AM	M139-15	Study2
+26_M163-10_IntMac	non-AM	M163-10	Study2
+27_M163-10_AlvMac	AM	M163-10	Study2
+30_M59-16_IntMac	non-AM	M59-16	Study2
+31_M59-16_AlvMac	AM	M59-16	Study2
