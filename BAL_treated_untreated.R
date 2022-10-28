@@ -234,6 +234,41 @@ ggplot(d, aes(fill=Type, y=Percentage, x=Timepoint)) +
 
 write.table(d,"Proportion_BAL_trt_untrt_S5C.txt", quote=F,sep="\t")
 
+
+# Individual
+
+d <- as.data.frame(as.matrix(prop.table(table(bal_lungref$Sample,bal_lungref$predicted.celltype),1) * 100))
+names(d) <- c("Sample","Type","Percentage")
+d <- d %>% separate(col=Sample, into = c("Timepoint","Group","AnimalID"), sep=" ", remove = F)
+
+d$Type <- as.character(d$Type)
+d$Type[d$Type == "CD163+MRC1+ Mac"] <- "CD163+MRC1+\nMac"
+d$Type[d$Type == "CD163+MRC1+TREM2+ Mac"] <- "CD163+MRC1+\nTREM2+ Mac"
+d$Type[d$Type == "CD163+MRC1- Mac"] <- "CD163+MRC1-\nMac"
+d$Type[d$Type == "CD16+ Mono"] <- "CD16+\nMono"
+
+d$Type <- factor(d$Type, levels = c("CD163+MRC1+\nMac","CD163+MRC1+\nTREM2+ Mac","CD163+MRC1-\nMac","CD16+\nMono"))
+
+d$Group <- factor(d$Group, levels = c("Untreated","+Baricitinib"))
+
+ggplot(d, aes(y=Percentage, x=Timepoint)) + 
+  geom_line(aes(group=AnimalID), color="grey") +
+  geom_point(size = 4, shape = 21, aes(fill= Type)) +
+  theme_bw() +
+  ylab("Percentage of Macrophages\n& Monocytes") + xlab("") +
+  scale_y_continuous(expand=expansion(mult=c(0.1,0.2))) +
+  scale_fill_manual(values = c("#045a8d","#a50f15","#fb6a4a","#fec44f")) +
+  stat_summary(fun= median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.75, color = "black", size = 0.5) +
+  facet_grid(Group~Type, scales = "free_y") +
+  theme(strip.background =element_rect(fill="white")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(text = element_text(size=14),
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size=12, color = "black"))
+
+
+
 # SingleR based reference
 
 # Stacked bar chart - AnimalID
