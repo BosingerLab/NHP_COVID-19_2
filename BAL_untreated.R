@@ -166,6 +166,47 @@ ggplot(d, aes(fill=Type, y=Percentage, x=Timepoint)) +
   theme(strip.background =element_rect(fill="white")) +
   scale_fill_manual(values= c("#045a8d","#a50f15","#fb6a4a","#fec44f"))
 
+# Individual samples
+d <- as.data.frame(as.matrix(prop.table(table(bal_unt_lungref$Sample,bal_unt_lungref$predicted.celltype),1) * 100))
+head(d)
+names(d) <- c("Sample","Type","Percentage")
+d <- d %>% separate(col=Sample, into = c("Tissue","Timepoint","Group","AnimalID"), sep="_", remove = F)
+head(d)
+
+d$Type_Timepoint <- paste0(d$Type,"_",d$Timepoint)
+
+d$Type <- as.character(d$Type)
+d$Type[d$Type == "CD163+MRC1+ Mac"] <- "CD163+MRC1+\nMac"
+d$Type[d$Type == "CD163+MRC1+TREM2+ Mac"] <- "CD163+MRC1+\nTREM2+ Mac"
+d$Type[d$Type == "CD163+MRC1- Mac"] <- "CD163+MRC1-\nMac"
+d$Type[d$Type == "CD16+ Mono"] <- "CD16+\nMono"
+
+d$Type <- factor(d$Type, levels = c("CD163+MRC1+\nMac","CD163+MRC1+\nTREM2+ Mac","CD163+MRC1-\nMac","CD16+\nMono"))
+
+ggplot(d, aes(y=Percentage, x=Timepoint)) + 
+  geom_line(aes(group=AnimalID), color="grey") +
+  geom_point(size = 4, shape = 21, aes(fill= Type)) +
+  theme_bw() +
+  ylab("Percentage of Macrophages\n & Monocytes") + xlab("") +
+  scale_y_continuous(expand=expansion(mult=c(0.1,0.2))) +
+  scale_fill_manual(values = c("#045a8d","#a50f15","#fb6a4a","#fec44f")) +
+  stat_summary(fun= median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.75, color = "black", size = 0.5) +
+  facet_wrap(~Type, nrow = 1, scales = "free_y") +
+  theme(strip.background =element_rect(fill="white")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(text = element_text(size=14),
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size=12, color = "black"))
+
+list_pval <- list()
+for(type in unique(d$Type)){
+  print(type)
+  p <- wilcox.test(d[d$Type == type & d$Timepoint == "-5dpi",]$Percentage,d[d$Type == type & d$Timepoint == "4dpi",]$Percentage, paired = T, correct =F)$p.value
+  list_pval[[type]] <- p  
+}
+list_pval
+
 #-----------------------------------------------------------------------------------------------------------
 
 # Fig 4f,g,h
@@ -253,6 +294,86 @@ ggplot(d,aes(x=Gene,y=Percent,fill=Type)) +
         strip.text = element_text(color = "white",size=0),
         panel.border = element_rect(colour = "black", fill = NA)) +
   scale_fill_manual(values=c( c("#045a8d","#a50f15","#fb6a4a","#fec44f"))) 
+
+
+# Individual
+
+list_bal_unt_lungref_4dpi <- list()
+list_contribution <- list()
+
+bal_unt_lungref_4dpi$AnimalID <- str_split_fixed(bal_unt_lungref_4dpi$Sample,"_",4)[,4]
+
+for(aid in unique(bal_unt_lungref_4dpi$AnimalID)){
+  print(aid)
+  obj_aid <-  subset(bal_unt_lungref_4dpi, cells = row.names(bal_unt_lungref_4dpi@meta.data[bal_unt_lungref_4dpi$AnimalID == aid,]))
+  list_bal_unt_lungref_4dpi[[aid]] <- NormalizeData(obj_aid, assay = "RNA", normalization.method = "RC", scale.factor = 1e6)
+  cpm_data <- GetAssayData(list_bal_unt_lungref_4dpi[[aid]], slot = "data", assay = "RNA")
+  cpm_data_filt <- as.data.frame(cpm_data[c("IL6","IL10","IL1B","TNF","CXCL3","CXCL8","CXCL10","CCL4L1","MX2","ISG15","ISG20","IFI27"),])
+
+  total_norm_data_filt <- rowSums(cpm_data_filt)
+
+  am_like <- list_bal_unt_lungref_4dpi[[aid]]$predicted.celltype == "CD163+MRC1+ Mac"
+  am_trem2 <- list_bal_unt_lungref_4dpi[[aid]]$predicted.celltype == "CD163+MRC1+TREM2+ Mac"
+  im_like <- list_bal_unt_lungref_4dpi[[aid]]$predicted.celltype == "CD163+MRC1- Mac"
+  nc <- list_bal_unt_lungref_4dpi[[aid]]$predicted.celltype == "CD16+ Mono"
+
+  am_like_rowsums <- rowSums(cpm_data_filt[,am_like])
+  am_trem2_rowsums <- rowSums(cpm_data_filt[,am_trem2])
+  im_like_rowsums <- rowSums(cpm_data_filt[,im_like])
+  nc_rowsums <- rowSums(cpm_data_filt[,nc])
+
+  all_per <- data.frame("CD163posMRC1pos" = (am_like_rowsums/total_norm_data_filt)*100,
+                        "CD163posMRC1posTREM2pos" = (am_trem2_rowsums/total_norm_data_filt)*100,
+                        "CD163posMRC1neg" = (im_like_rowsums/total_norm_data_filt)*100,
+                        "CD16pos" = (nc_rowsums/total_norm_data_filt)*100)
+  
+  all_per$Gene <-  row.names(all_per)
+  
+  all_per <- melt(all_per)
+  all_per$AnimalID <- aid
+
+  list_contribution[[aid]] <- all_per
+}
+
+library(reshape2)
+
+d_new <- rbind(list_contribution[[1]],list_contribution[[2]],list_contribution[[3]])
+names(d_new) <- c("Gene","CellType","Percentage","AnimalID")
+
+d_new$Gene <- factor(d_new$Gene, levels = c("IL10","IL1B","IL6","TNF","CCL4L1","CXCL10","CXCL3","CXCL8","MX2","IFI27","ISG15","ISG20"))
+
+ggplot(d_new, aes(y = Percentage, x = CellType)) +
+  geom_line(aes(group=AnimalID), color = "grey")+
+  geom_point(size = 4, shape = 21, aes(fill= CellType)) +
+  stat_summary(fun= median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.75, color = "black", size = 0.5) +
+  facet_wrap(~Gene,ncol = 5) +
+  scale_fill_manual(values = c("#045a8d","#a50f15","#fb6a4a","#fec44f")) +
+  scale_y_continuous(expand=expansion(mult=c(0.1,0.4))) +
+  theme_bw() +
+  theme(strip.background =element_rect(fill="white")) +
+  theme(text = element_text(size=14),
+        axis.ticks.x=element_blank(),
+        axis.text.x = element_text(color = "black", size = 0, angle = 90),
+        axis.text.y = element_text(size=12, color = "black"))
+
+list_pval_cont <- list()
+for(gene in unique(d_new$Gene)){
+  for(type1 in unique(d_new$CellType)){
+    for(type2 in unique(d_new$CellType)){
+      if(type1 != type2){
+        print(paste0(gene,":",type1," and ",type2))
+        d1 <- d_new[d_new$CellType == type1 & d_new$Gene == gene,]$Percentage
+        d2 <- d_new[d_new$CellType == type2 & d_new$Gene == gene,]$Percentage
+        print(d1)
+        print(d2)
+        p <- wilcox.test(d1,d2, paired = T, correct =F)$p.value
+        list_pval_cont[[gene]][[paste0(type1,"_",type2)]] <- p  
+      }
+    }
+  }
+}
+list_pval_cont
 
 
 #-----------------------------------------------------------------------------------------------------------
