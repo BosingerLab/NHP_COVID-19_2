@@ -4,6 +4,9 @@ library("dplyr")
 library("stringr")
 library("SingleR")
 
+# Mild samples should be moderate
+
+
 ref <- BlueprintEncodeData()
 
 setwd("/data/Analysis_BAL_Lung_Human_2022")
@@ -150,6 +153,120 @@ p3 <- get_contribution(bal_severe_cpm,"Severe")
 
 p1/p2/p3
 
+
+# Individual
+
+human_lungref$Group_Type <- paste0(human_lungref$Group,"\n",human_lungref$predicted.celltype)
+Idents(human_lungref) <- "Group_Type"
+
+human_lungref$Group_Type <- factor(human_lungref$Group_Type, levels = c("Healthy\nFABP4hi","Healthy\nSPP1hi","Healthy\nFCN1hi","Healthy\nProliferating",
+                                                                        "Mild\nFABP4hi","Mild\nSPP1hi","Mild\nFCN1hi","Mild\nProliferating",
+                                                                        "Severe\nFABP4hi","Severe\nSPP1hi","Severe\nFCN1hi","Severe\nProliferating"))
+levels(human_lungref$Group_Type)
+Idents(human_lungref) <- "Group_Type"
+p1 <- DotPlot(human_lungref,features = c("TNF","IL6","IL10","IL1B"), assay = "RNA") + coord_flip()
+p2 <- DotPlot(human_lungref,features = c("CCL4L1","CXCL10","CXCL3","CXCL8","CCR2"), assay = "RNA") + coord_flip()
+p3 <- DotPlot(human_lungref,features = c("IFI27","ISG15","ISG20","MX2"), assay = "RNA") + coord_flip()
+
+p1/p2/p3
+
+# contribution CPM
+library(reshape2)
+library(rlist)
+plot_contribution_human <- function(obj) {
+  
+  list_bal <- list()
+  list_contribution <- list()
+  
+  for(s in unique(obj$Sample)){
+    print(s)
+    obj_s <-  subset(obj, cells = row.names(obj@meta.data[obj$Sample == s,]))
+    list_bal[[s]] <- NormalizeData(obj_s, assay = "RNA", normalization.method = "RC", scale.factor = 1e6)
+    cpm_data <- GetAssayData(list_bal[[s]], slot = "data", assay = "RNA")
+    cpm_data_filt <- as.data.frame(cpm_data[c("IL6","IL10","IL1B","TNF","CCR2","CXCL3","CXCL8","CXCL10","MX2","ISG15","ISG20","IFI27"),])
+    write.table(cpm_data_filt,"CPM_data_filt.txt", quote = F, sep = "\t")
+        
+    total_norm_data_filt <- rowSums(cpm_data_filt)
+    
+    print(total_norm_data_filt)
+    
+    fabp4 <- obj_s$predicted.celltype == "FABP4hi"
+    spp1 <- obj_s$predicted.celltype == "SPP1hi"
+    fcn1 <- obj_s$predicted.celltype == "FCN1hi"
+    prolif <- obj_s$predicted.celltype == "Proliferating"
+    
+    fabp4_rowsums <- rowSums(cpm_data_filt[,fabp4, drop = FALSE])
+    spp1_rowsums <- rowSums(cpm_data_filt[,spp1, drop = FALSE])
+    fcn1_rowsums <- rowSums(cpm_data_filt[,fcn1, drop = FALSE])
+    prolif_rowsums <- rowSums(cpm_data_filt[,prolif, drop = FALSE])
+    
+    all_per <- data.frame("FABP4hi" = (fabp4_rowsums/total_norm_data_filt)*100,
+                          "SPP1hi" = (spp1_rowsums/total_norm_data_filt)*100,
+                          "FCN1hi" = (fcn1_rowsums/total_norm_data_filt)*100,
+                          "Proliferating" = (prolif_rowsums/total_norm_data_filt)*100)
+    
+    all_per$Gene <-  row.names(all_per)
+    
+    all_per <- melt(all_per)
+    all_per$AnimalID <- s
+    
+    list_contribution[[s]] <- all_per
+  }
+  
+  d_new <- list.rbind(list_contribution)
+  names(d_new) <- c("Gene","CellType","Percentage","Sample")
+  
+  d_new$Gene <- factor(d_new$Gene, levels = c("IL10","IL1B","IL6","TNF","CCR2","CXCL10","CXCL3","CXCL8","MX2","IFI27","ISG15","ISG20"))
+  
+  p <- ggplot(d_new, aes(y = Percentage, x = CellType)) +
+    geom_point(size = 3.5, shape = 21, aes(fill= CellType)) +
+    stat_summary(fun= median, fun.min = median, fun.max = median,
+                 geom = "crossbar", width = 0.75, color = "black", size = 0.75) +
+    facet_wrap(~Gene, ncol =5) +
+    scale_y_continuous(expand=expansion(mult=c(0.1,0.4))) +
+    scale_fill_manual(values = c("#74a9cf","#d7301f","#fcbba1","#238b45")) +
+    theme_bw() +
+    theme(strip.background =element_rect(fill="white")) +
+    theme(text = element_text(size=14),
+          axis.ticks.x=element_blank(),
+          axis.text.x = element_text(color = "black", size = 0, angle = 90),
+          axis.text.y = element_text(size=12, color = "black"))
+  print(p)
+  return(d_new)
+}
+
+bal_control_cpm <- subset(human_lungref, cells = row.names(human_lungref@meta.data[human_lungref$Group == "Healthy",]))
+bal_mild_cpm <- subset(human_lungref, cells = row.names(human_lungref@meta.data[human_lungref$Group == "Mild",]))
+bal_severe_cpm <- subset(human_lungref, cells = row.names(human_lungref@meta.data[human_lungref$Group == "Severe",]))
+
+d_new_h <- plot_contribution_human(bal_control_cpm)
+d_new_m <- plot_contribution_human(bal_mild_cpm)
+d_new_s <- plot_contribution_human(bal_severe_cpm)
+
+p1/p2/p3
+
+list_pval_cont_s <- list()
+for(gene in unique(d_new_s$Gene)){
+  
+    for(type1 in unique(d_new_s$CellType)){
+      for(type2 in unique(d_new_s$CellType)){
+        if(type1 != type2 & is.null(list_pval_cont_s[[gene]][[paste0(type1,"_",type2)]]) & is.null(list_pval_cont_s[[gene]][[paste0(type2,"_",type1)]])){
+          print(paste0(gene,":",type1," and ",type2))
+          d1 <- d_new_s[d_new_s$CellType == type1 & d_new_s$Gene == gene,]$Percentage
+          d2 <- d_new_s[d_new_s$CellType == type2 & d_new_s$Gene == gene,]$Percentage
+          print(d1)
+          print(d2)
+          p <- wilcox.test(d1,d2, paired = T, correct =F)$p.value
+          list_pval_cont_s[[gene]][[paste0(type1,"_",type2)]] <- p  
+        }
+      }
+  
+  }
+}
+list_pval_cont_s
+
+
+
 # Proportions
 
 d <- as.data.frame(prop.table(table(human_lungref$Sample,human_lungref$predicted.celltype),1) * 100)
@@ -185,3 +302,5 @@ ggplot(d,aes(x=CellType,y=Percent, group = Group)) +
         axis.text.y = element_text(size=12, color = "black")) 
 
   
+
+
